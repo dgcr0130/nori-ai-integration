@@ -1,6 +1,8 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { AiApi, ApiFailure, LoginRequired, TransportFailure, object, questionContext, text, type Session } from './api'
 import { readEvents, terminalEvents } from './stream'
+import { Feedback, emptyFeedback, characterCount, feedbackReceipt, feedbackError, type FeedbackDraft } from './feedback'
+import { Review, emptyReview, emptyReviewDraft, reviewList, reviewDetail, reviewAction, type ReviewState, type ReviewStatus, type ReviewDraft } from './review'
 
 interface Accepted { jobId: string; conversationId: string; messageId: string; queuePosition: number }
 interface LogicalQuestion { path: string; body: string; key: string; query: string }
@@ -12,17 +14,19 @@ interface Result { jobId: string; jobStatus: string; answer: Answer | null; bloc
 interface Message { id: string; role: string; content: string | Result }
 interface Job { accepted: Accepted; active: boolean; lastId: string; interrupted: boolean }
 interface State {
-  tab: 'conversation' | 'list'; query: string; conversationId: string | null
+  tab: 'conversation' | 'list' | 'review'; query: string; conversationId: string | null
   items: ConversationEntry[]; nextAfter: string | null; messages: Message[]
   job: Job | null; retry: LogicalQuestion | null; progress: string[]
   notice: string; retryAfter: string | null; evidence: string; exported: string
   busy: boolean; ready: boolean; cancelResult: string
+  canReview: boolean; review: ReviewState; feedback: Record<string, FeedbackDraft>
 }
 
 const initialState = (): State => ({
   tab: 'conversation', query: '', conversationId: null, items: [], nextAfter: null, messages: [],
   job: null, retry: null, progress: [], notice: '', retryAfter: null, evidence: '', exported: '',
   busy: false, ready: false, cancelResult: '',
+  canReview: false, review: emptyReview(), feedback: {},
 })
 
 function array(value: unknown): unknown[] {
@@ -67,6 +71,7 @@ export class ConversationModel {
   private stream: AbortController | null = null
   private sourceRevision = 0
   private exportRevision = 0
+  private reviewRevision = 0
 
   constructor(private readonly api: AiApi) {}
   snapshot = (): State => this.state
@@ -85,6 +90,7 @@ export class ConversationModel {
   private clear(): void {
     this.generation++
     this.sourceRevision++; this.exportRevision++
+    this.reviewRevision++
     this.stream?.abort(); this.stream = null
     this.api.cancelAll(); this.sessionValue = null
     this.state = initialState()
@@ -126,7 +132,8 @@ export class ConversationModel {
     const changed = this.sessionValue !== null && this.sessionValue.subject !== next.subject
     if (changed) this.clear()
     this.sessionValue = next; this.api.csrf = next.csrf
-    this.update({ ready: true, notice: '', retryAfter: null })
+    if (!next.canReview) this.clearReview()
+    this.update({ ready: true, canReview: next.canReview, notice: '', retryAfter: null })
     if (changed) await this.loadList()
     return !changed
   }
@@ -146,6 +153,119 @@ export class ConversationModel {
   })
   setQuery(value: string): void { this.update({ query: value }) }
   setTab(value: State['tab']): void { this.update({ tab: value }) }
+  private setReview(value: Partial<ReviewState>): void { this.update({ review: { ...this.state.review, ...value } }) }
+  private clearReview(): void {
+    this.reviewRevision++
+    this.update({ review: emptyReview(), tab: this.state.tab === 'review' ? 'conversation' : this.state.tab })
+  }
+  changeFeedback(jobId: string, comment: string): void {
+    const draft = this.state.feedback[jobId] ?? emptyFeedback()
+    this.update({ feedback: { ...this.state.feedback, [jobId]: { ...draft, comment } } })
+  }
+  feedback = (jobId: string, rating: 'UP' | 'DOWN'): Promise<void> => this.task(async () => {
+    const draft = this.state.feedback[jobId] ?? emptyFeedback()
+    if (draft.busy) return
+    const set = (value: Partial<FeedbackDraft>) => this.update({ feedback: {
+      ...this.state.feedback, [jobId]: { ...(this.state.feedback[jobId] ?? draft), ...value },
+    } })
+    set({ receipt: null })
+    if (characterCount(draft.comment) > 2000) throw new Error('지적: 0~2000자로 입력해 주세요.')
+    const generation = this.generation
+    set({ busy: true })
+    try {
+      if (!await this.refreshSession()) return
+      const receipt = feedbackReceipt(await this.request(`/v1/answers/${encodeURIComponent(jobId)}/feedback`, {
+        method: 'PUT', body: JSON.stringify({ rating, comment: draft.comment }),
+      }))
+      set({ receipt })
+    } catch (error) { throw feedbackError(error) }
+    finally { if (generation === this.generation) set({ busy: false }) }
+  })
+  changeReview(draft: ReviewDraft): void { if (!this.state.review.busy) this.setReview({ draft }) }
+  private async reviewAccess(): Promise<void> {
+    const revision = this.reviewRevision
+    if (!await this.refreshSession() || !this.state.canReview || revision !== this.reviewRevision) {
+      throw new DOMException('종료된 검토입니다.', 'AbortError')
+    }
+  }
+  private async reviewRequest(path: string, options: Parameters<AiApi['request']>[1] = {}): Promise<unknown> {
+    const revision = this.reviewRevision
+    try {
+      const result = await this.request(path, options)
+      if (revision !== this.reviewRevision || !this.state.canReview) throw new DOMException('종료된 검토입니다.', 'AbortError')
+      return result
+    } catch (error) {
+      if (revision !== this.reviewRevision) throw new DOMException('종료된 검토입니다.', 'AbortError')
+      if (error instanceof ApiFailure && (error.status === 403 || error.status === 404)) {
+        if (error.status === 403) {
+          this.clearReview()
+          if (error.code === 'REVIEW_FORBIDDEN') this.update({ canReview: false })
+        } else this.setReview({ detail: null, draft: emptyReviewDraft() })
+      }
+      throw error
+    }
+  }
+  private reviewTask(action: () => Promise<void>): Promise<void> {
+    return this.task(async () => {
+      if (this.state.review.busy) return
+      const generation = this.generation, revision = this.reviewRevision
+      this.setReview({ busy: true })
+      try {
+        await action()
+      } catch (error) { throw feedbackError(error) }
+      finally { if (generation === this.generation && revision === this.reviewRevision) this.setReview({ busy: false }) }
+    })
+  }
+  private async loadReviews(after = ''): Promise<void> {
+    await this.reviewAccess()
+    const query = new URLSearchParams({ state: this.state.review.status, after, limit: '20' })
+    const list = reviewList(await this.reviewRequest(`/v1/reviews?${query}`))
+    this.setReview(list)
+  }
+  private async loadReview(id: string): Promise<void> {
+    await this.reviewAccess()
+    const detail = reviewDetail(await this.reviewRequest(`/v1/reviews/${encodeURIComponent(id)}`))
+    this.setReview({ detail, draft: emptyReviewDraft() })
+  }
+  reviewTab = (): Promise<void> => this.reviewTask(async () => {
+    await this.loadReviews()
+    this.update({ tab: 'review' })
+  })
+  reviews = (status: ReviewStatus): Promise<void> => this.reviewTask(async () => {
+    this.setReview({ status, items: [], nextAfter: null, detail: null, draft: emptyReviewDraft() })
+    await this.loadReviews()
+  })
+  nextReviews = (): Promise<void> => this.reviewTask(async () => {
+    const after = this.state.review.nextAfter
+    if (after !== null) { this.setReview({ detail: null, draft: emptyReviewDraft() }); await this.loadReviews(after) }
+  })
+  openReview = (id: string): Promise<void> => this.reviewTask(async () => {
+    this.setReview({ detail: null, draft: emptyReviewDraft() })
+    await this.loadReview(id)
+  })
+  resolveReview = (): Promise<void> => this.reviewTask(async () => {
+    await this.reviewAccess()
+    const detail = this.state.review.detail
+    if (!detail || detail.feedback.state !== 'OPEN') return
+    const body = JSON.stringify({ version: detail.feedback.version, cause: this.state.review.draft.cause,
+      action: reviewAction(this.state.review.draft, detail) })
+    if (new TextEncoder().encode(body).byteLength > 64 * 1024) throw new Error('조치 본문: 64KiB 이내로 입력해 주세요.')
+    const id = detail.feedback.feedbackId
+    try {
+      feedbackReceipt(await this.reviewRequest(`/v1/reviews/${encodeURIComponent(id)}/resolve`, { method: 'POST', body }))
+    } catch (error) {
+      if (error instanceof ApiFailure && error.status === 409 && error.code === 'REVIEW_CONFLICT') {
+        // 충돌한 입력은 새 version에 자동 결속하지 않는다. 새 상세를 보고 다시 입력한다.
+        this.setReview({ detail: null, draft: emptyReviewDraft() })
+        await this.loadReviews()
+        await this.loadReview(id)
+      }
+      throw error
+    }
+    this.setReview({ detail: null, draft: emptyReviewDraft() })
+    await this.loadReviews()
+    await this.loadReview(id)
+  })
   next = (): Promise<void> => this.task(async () => {
     if (this.state.nextAfter !== null) await this.loadList(this.state.nextAfter)
   })
@@ -331,6 +451,8 @@ function AnswerView({ result, model }: { result: Result; model: ConversationMode
         <button onClick={() => void model.evidence(result.jobId, citation.evidenceId)}>근거 {citation.number}</button>
         <span>{citation.sourceType} {JSON.stringify(citation.location)}</span>
       </div>)}
+      <Feedback draft={model.snapshot().feedback[result.jobId] ?? emptyFeedback()}
+        change={comment => model.changeFeedback(result.jobId, comment)} submit={rating => void model.feedback(result.jobId, rating)} />
     </>}
     {result.blocks.map(block => <div key={block.id}>
       <pre>{JSON.stringify(block.value, null, 2)}</pre>
@@ -353,11 +475,15 @@ export function Conversation({ model, close }: { model: ConversationModel; close
     <nav aria-label="탭">
       <button aria-pressed={state.tab === 'conversation'} onClick={() => model.setTab('conversation')}>대화</button>
       <button aria-pressed={state.tab === 'list'} onClick={() => model.setTab('list')}>대화 목록</button>
+      {state.canReview && <button aria-pressed={state.tab === 'review'} disabled={state.review.busy} onClick={() => void model.reviewTab()}>검토</button>}
       <button disabled={!state.ready || locked} onClick={() => void model.create()}>새 대화</button>
     </nav>
     {state.notice && <p role="alert">{state.notice}</p>}
     {state.retryAfter && <p>Retry-After: {state.retryAfter}</p>}
     <main>
+      {state.ready && state.canReview && state.tab === 'review' && <Review state={state.review}
+        list={status => void model.reviews(status)} next={() => void model.nextReviews()} open={id => void model.openReview(id)}
+        change={draft => model.changeReview(draft)} submit={() => void model.resolveReview()} />}
       {state.ready && state.tab === 'list' && <section aria-label="대화 목록">
         {state.items.length === 0 && <p>대화가 없습니다.</p>}
         {state.items.map(item => <article key={item.id}>

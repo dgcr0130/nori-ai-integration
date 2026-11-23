@@ -3,6 +3,8 @@ import { createServer, type IncomingHttpHeaders, type ServerResponse } from 'nod
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { build } from 'vite'
+import { createHash } from 'node:crypto'
+import type { ReviewDetail, ReviewStatus } from '../../src/review'
 
 interface Conversation { id: string; title: string | null; createdAt: string; updatedAt: string; status: string }
 interface Message { messageId: string; role: string; content: string | Record<string, unknown> }
@@ -40,6 +42,10 @@ export class TestBackend {
   readonly replay = new Map<string, TestEvent[]>()
   readonly pendingResponses = new Set<ServerResponse>()
   readonly issuedCursors: string[] = []
+  readonly reviewers = new Set<string>()
+  readonly feedbacks = new Map<string, { subject: string; detail: ReviewDetail }>()
+  readonly reviewCursors: string[] = []
+  private readonly reviewPositions = new Map<string, number>()
   private readonly keys = new Map<string, { digest: string; accepted: Accepted }>()
   private readonly server = createServer((request, response) => {
     void (async () => {
@@ -136,6 +142,31 @@ export class TestBackend {
     }
   }
   noEvidence = false
+  seedReview(subject = 'alice', state: ReviewStatus = 'OPEN', evidenceType: 'DOCUMENT' | 'SYSTEM' | 'EMPTY' = 'DOCUMENT'): string {
+    const feedbackId = `00000000-0000-4000-8000-${String(++this.serial).padStart(12, '0')}`
+    const bodyMasked = '검토 근거 <b>실행 금지</b>'
+    const evidence = evidenceType === 'EMPTY' ? [] : [{
+      number: 1, sourceType: evidenceType, bodyMasked, bodySha256: createHash('sha256').update(bodyMasked).digest('hex'),
+      location: evidenceType === 'DOCUMENT' ? { bucket: 'manuals', objectKey: 'guide.md', revision: 'a'.repeat(64), section: '## 안내', lineFrom: 1, lineTo: 3 }
+        : { ref: 'system://TEST/item/1' }, permissions: ['READ'],
+      ...(evidenceType === 'DOCUMENT' ? {} : { status: 'SUCCESS', observedAt: '2026-11-23T00:00:00Z', missingFields: [], retentionMeta: {}, warnings: [] }),
+    }]
+    this.feedbacks.set(feedbackId, { subject, detail: {
+      feedback: { feedbackId, version: 1, state, rating: 'DOWN', comment: '검토 지적 표식', createdAt: '2026-11-23T00:00:00Z', updatedAt: '2026-11-23T00:00:00Z' },
+      answerId: `snapshot-job-${this.serial}`, question: '검토 질문 표식',
+      answer: { kind: 'ANSWER', text: '검토 답변 <img src=x onerror="window.reviewExecuted=true">', citations: [], sentences: [] },
+      evidence, reviews: [], questionCase: null,
+    } })
+    return feedbackId
+  }
+  private feedbackFailure(response: ServerResponse, status: number, code: string): void {
+    if (status === 503) response.setHeader('Retry-After', '1')
+    this.json(response, status, { code, message: '피드백 요청을 처리할 수 없습니다', requestId: 'gateway-request' })
+  }
+  private receipt(response: ServerResponse, detail: ReviewDetail): void {
+    const { feedbackId, version, state } = detail.feedback
+    this.json(response, 200, { feedbackId, version, state })
+  }
   private conversationBody(row: SavedConversation): Record<string, unknown> {
     return { id: row.value.id, ownerSystem: 'TEST', ownerActorRef: `actor-${row.subject}`,
       createdAt: row.value.createdAt, updatedAt: row.value.updatedAt, status: row.value.status }
@@ -163,16 +194,81 @@ export class TestBackend {
       if (override.hold) {
         this.pendingResponses.add(response)
         response.once('close', () => this.pendingResponses.delete(response))
-      } else { if (override.retryAfter) response.setHeader('Retry-After', override.retryAfter); this.json(response, override.status, override.body) }
+      } else {
+        if (override.retryAfter) response.setHeader('Retry-After', override.retryAfter)
+        this.json(response, override.status, override.body)
+      }
       return
     }
     if (!request.subject) { this.json(response, 401, { code: 'LOGIN_REQUIRED', message: '로그인이 필요합니다.', requestId: 'test-request' }); return }
     if (path === '/api/ai/session') {
-      this.json(response, 200, { subject: request.subject, canReview: false, integrationVersion: '1.0.0',
+      this.json(response, 200, { subject: request.subject, canReview: this.reviewers.has(request.subject), integrationVersion: '1.0.0',
         csrf: request.headers.authorization ? null : { headerName: 'X-Nori-AI-CSRF', token: 'fake-csrf' } }); return
     }
     if (['POST', 'PUT', 'DELETE'].includes(request.method) && !request.headers.authorization && request.headers['x-nori-ai-csrf'] !== 'fake-csrf') {
       this.json(response, 403, { code: 'CSRF_INVALID', message: '요청 보안 정보를 확인해 주세요.', requestId: 'test-request' }); return
+    }
+    const evaluation = /^\/api\/ai\/v1\/answers\/([^/]+)\/feedback$/.exec(path)
+    if (evaluation && request.method === 'PUT') {
+      const answerId = evaluation[1] ?? '', job = this.jobs.get(answerId)
+      if (!job || job.subject !== request.subject || !this.conversations.has(job.accepted.conversationId)) { this.feedbackFailure(response, 404, 'NOT_FOUND'); return }
+      if (!['SUCCEEDED', 'PARTIAL'].includes(job.status)) { this.feedbackFailure(response, 409, 'ANSWER_NOT_READY'); return }
+      const body: unknown = JSON.parse(request.body)
+      if (typeof body !== 'object' || body === null || !('rating' in body) || !('comment' in body)
+        || Object.keys(body).length !== 2 || !['UP', 'DOWN'].includes(String(body.rating)) || typeof body.comment !== 'string' || [...body.comment].length > 2000) {
+        this.feedbackFailure(response, 400, 'INVALID_INPUT'); return
+      }
+      let saved = [...this.feedbacks.values()].find(row => row.subject === request.subject && row.detail.answerId === answerId)
+      if (saved && saved.detail.feedback.rating === body.rating && saved.detail.feedback.comment === body.comment) { this.receipt(response, saved.detail); return }
+      if (!saved) {
+        const id = this.seedReview(request.subject, 'OPEN', 'SYSTEM')
+        saved = this.feedbacks.get(id)
+        if (!saved) throw new Error('피드백 대역 생성 실패')
+        saved.detail.answerId = answerId
+        const conversation = this.conversations.get(job.accepted.conversationId)
+        const question = conversation?.messages.find(message => message.messageId === job.accepted.messageId)?.content
+        if (typeof question !== 'string') throw new Error('피드백 질문 대역이 없습니다.')
+        saved.detail.question = question
+        if (this.noEvidence) saved.detail.evidence = []
+        const result = this.result(answerId), outer = result.result
+        if (typeof outer === 'object' && outer !== null && 'payload' in outer && typeof outer.payload === 'object' && outer.payload !== null
+          && 'answer' in outer.payload && typeof outer.payload.answer === 'object' && outer.payload.answer !== null && !Array.isArray(outer.payload.answer)) {
+          saved.detail.answer = outer.payload.answer as Record<string, unknown>
+        }
+        saved.detail.feedback.state = body.rating === 'UP' && body.comment === '' ? 'RESOLVED' : 'OPEN'
+      } else {
+        saved.detail.feedback.state = saved.detail.feedback.state !== 'OPEN' ? 'OPEN' : body.rating === 'UP' && body.comment === '' ? 'RESOLVED' : 'OPEN'
+        saved.detail.feedback.version++
+        saved.detail.questionCase = null
+      }
+      saved.detail.feedback.rating = String(body.rating); saved.detail.feedback.comment = body.comment
+      this.receipt(response, saved.detail); return
+    }
+    const review = /^\/api\/ai\/v1\/reviews(?:\/([^/]+)(\/resolve)?)?$/.exec(path)
+    if (review) {
+      if (!this.reviewers.has(request.subject)) { this.feedbackFailure(response, 403, 'REVIEW_FORBIDDEN'); return }
+      const id = review[1]
+      if (!id) {
+        const state = url.searchParams.get('state') ?? 'OPEN', after = url.searchParams.get('after') ?? '', limit = Number(url.searchParams.get('limit') ?? '20')
+        const offset = after === '' ? 0 : this.reviewPositions.get(`${state}:${after}`)
+        if (!['OPEN', 'RESOLVED', 'REJECTED'].includes(state) || !Number.isInteger(limit) || limit < 1 || limit > 100 || offset === undefined) {
+          this.feedbackFailure(response, 400, 'INVALID_INPUT'); return
+        }
+        const rows = [...this.feedbacks.values()].map(row => row.detail.feedback).filter(row => row.state === state)
+        const items = rows.slice(offset, offset + limit), last = items.at(-1)
+        const nextAfter = offset + limit < rows.length && last ? `${Buffer.from(`${last.createdAt}\n${last.feedbackId}`).toString('base64url')}.${Buffer.alloc(32, 7).toString('base64url')}` : null
+        if (nextAfter !== null) { this.reviewPositions.set(`${state}:${nextAfter}`, offset + limit); this.reviewCursors.push(nextAfter) }
+        this.json(response, 200, { items, nextAfter }); return
+      }
+      const saved = this.feedbacks.get(id)
+      if (!saved) { this.feedbackFailure(response, 404, 'NOT_FOUND'); return }
+      if (!review[2]) { this.json(response, 200, saved.detail); return }
+      const body: unknown = JSON.parse(request.body)
+      if (typeof body !== 'object' || body === null || !('version' in body) || !('cause' in body) || !('action' in body)) { this.feedbackFailure(response, 400, 'INVALID_INPUT'); return }
+      if (body.version !== saved.detail.feedback.version || saved.detail.feedback.state !== 'OPEN') { this.feedbackFailure(response, 409, 'REVIEW_CONFLICT'); return }
+      saved.detail.reviews.push({ version: body.version, reviewerRef: `actor-${request.subject}`, cause: body.cause, action: body.action, createdAt: '2026-11-23T00:00:01Z' })
+      saved.detail.feedback.version++; saved.detail.feedback.state = body.cause === 'REJECT' ? 'REJECTED' : 'RESOLVED'
+      this.receipt(response, saved.detail); return
     }
     if (path === '/api/ai/v1/conversations') {
       if (request.method === 'POST') {

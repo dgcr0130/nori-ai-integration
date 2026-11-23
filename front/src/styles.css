@@ -2,7 +2,7 @@
 .frame, .frame * { box-sizing: border-box; }
 .frame { all: initial; position: fixed; bottom: 16px; right: 16px; z-index: 2147483000; color: #172033; font: 14px/1.5 sans-serif; color-scheme: light; }
 .frame.left { left: 16px; right: auto; }
-button, textarea, a { font: inherit; }
+button, textarea, select, a { font: inherit; }
 button { appearance: none; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #172033; padding: 6px 10px; cursor: pointer; }
 button:hover { background: #eff6ff; }
 button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }
@@ -23,3 +23,6 @@ footer { border-top: 1px solid #e2e8f0; }
 label { display: block; }
 textarea { display: block; resize: none; width: 100%; height: 60px; border: 1px solid #94a3b8; border-radius: 4px; color: #172033; background: #fff; }
 a { color: var(--accent, #2563eb); }
+select { max-width: 100%; color: #172033; background: #fff; border: 1px solid #94a3b8; border-radius: 4px; padding: 6px; }
+[aria-label="피드백"], [aria-label="검토 조치"] { border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 8px; }
+select:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }
