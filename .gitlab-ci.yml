@@ -1,0 +1,38 @@
+stages: [widget, verify, publish]
+
+widget:
+  stage: widget
+  tags: [nori-msa]
+  image: node:22-alpine
+  script:
+    - node --version
+    - cd front
+    - npm ci
+    - npm run build
+    - npm run lint
+  artifacts:
+    paths: [front/dist/widget.js]
+
+# Node 잡의 잠금 빌드 산출물을 Gradle processResources 입력으로 사용한다.
+# Maven 이미지 안 Node 존재를 가정하지 않는다.
+verify:
+  stage: verify
+  tags: [nori-msa]
+  image: harbor.nori.local/library/maven:3.9-eclipse-temurin-21
+  needs: [widget]
+  script:
+    - bash ./gradlew :backend:ai-integration-spring-boot-starter:build -x widgetNpmCi -x widgetBuild --no-daemon
+  artifacts:
+    paths: [backend/ai-integration-spring-boot-starter/build/libs/]
+    reports:
+      junit: backend/ai-integration-spring-boot-starter/build/test-results/test/TEST-*.xml
+
+publish:
+  stage: publish
+  tags: [nori-msa]
+  image: harbor.nori.local/library/maven:3.9-eclipse-temurin-21
+  needs: [widget, verify]
+  script:
+    - bash ./gradlew :backend:ai-integration-spring-boot-starter:publishMavenJavaPublicationToGitLabRepository -x widgetNpmCi -x widgetBuild --no-daemon
+  rules:
+    - if: '$CI_COMMIT_TAG'

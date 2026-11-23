@@ -44,22 +44,26 @@ val widgetNpmCi by tasks.registering(Exec::class) {
     inputs.files(frontDirectory.file("package.json"), frontDirectory.file("package-lock.json"))
     outputs.dir(frontDirectory.dir("node_modules"))
 }
-val widgetBuild by tasks.registering(Exec::class) {
+val verifyWidgetVersion by tasks.registering {
     val packageJsonFile = frontDirectory.file("package.json").asFile
     val expectedVersion = integrationVersionValue
-    dependsOn(widgetNpmCi)
+    inputs.file(packageJsonFile)
+    inputs.property("integrationVersion", expectedVersion)
+    doLast {
+        val frontVersion = groovy.json.JsonSlurper().parse(packageJsonFile)
+            .let { it as Map<*, *> }["version"]
+        check(frontVersion == expectedVersion) { "jar와 위젯 버전이 일치해야 합니다." }
+    }
+}
+val widgetBuild by tasks.registering(Exec::class) {
+    dependsOn(widgetNpmCi, verifyWidgetVersion)
     workingDir(frontDirectory)
     commandLine(npmCommand, "run", "build")
     inputs.files(fileTree(frontDirectory) {
         include("src/**", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts")
     })
-    inputs.property("integrationVersion", expectedVersion)
+    inputs.property("integrationVersion", integrationVersionValue)
     outputs.file(frontDirectory.file("dist/widget.js"))
-    doFirst {
-        val frontVersion = groovy.json.JsonSlurper().parse(packageJsonFile)
-            .let { it as Map<*, *> }["version"]
-        check(frontVersion == expectedVersion) { "jar와 위젯 버전이 일치해야 합니다." }
-    }
 }
 val integrationVersion by tasks.registering {
     val output = layout.buildDirectory.file("generated/integration-version/META-INF/ai-integration/version.properties").get().asFile
@@ -74,7 +78,7 @@ val integrationVersion by tasks.registering {
     }
 }
 tasks.processResources {
-    dependsOn(widgetBuild, integrationVersion)
+    dependsOn(widgetBuild, verifyWidgetVersion, integrationVersion)
     from(widgetBuild) { into("META-INF/ai-integration") }
     from(layout.buildDirectory.dir("generated/integration-version"))
 }
