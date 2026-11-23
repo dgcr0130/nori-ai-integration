@@ -1,17 +1,22 @@
 package com.nori.ai.integration.security;
 
 import com.nori.ai.integration.api.AiRequestIdentityResolver;
+import com.nori.ai.integration.api.AiToolRegistration;
 import com.nori.ai.integration.config.AiIntegrationProperties;
 import com.nori.ai.integration.observability.AiRequestLog;
 import com.nori.ai.integration.web.AiBrowserController;
 import com.nori.ai.integration.web.AiGatewayRelay;
 import com.nori.ai.integration.web.AiSseRelay;
+import com.nori.ai.integration.web.AiInternalQueryController;
+import com.nori.ai.integration.tool.AiToolDispatcher;
+import com.nori.ai.integration.tool.AiToolEnvelopeAssembler;
 import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Set;
+import java.util.List;
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
@@ -34,8 +39,29 @@ import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 @EnableWebSecurity
 public class AiSecurityConfiguration {
     public static final int BROWSER_ORDER = Ordered.HIGHEST_PRECEDENCE + 100;
+    public static final int INTERNAL_ORDER = Ordered.HIGHEST_PRECEDENCE;
     // 내부 체인을 추가할 때도 공통 jar의 체인 이름은 이 집합에서 함께 관리한다.
-    private static final Set<String> INTEGRATION_CHAIN_BEAN_NAMES = Set.of("aiBrowserSecurityFilterChain");
+    private static final Set<String> INTEGRATION_CHAIN_BEAN_NAMES = Set.of("aiBrowserSecurityFilterChain", "aiInternalSecurityFilterChain");
+
+    @Bean AiToolDispatcher aiToolDispatcher() { return new AiToolDispatcher(Clock.systemUTC()); }
+    @Bean AiToolEnvelopeAssembler aiToolEnvelopeAssembler() { return new AiToolEnvelopeAssembler(); }
+    @Bean AiInternalQueryController aiInternalQueryController(AiIntegrationProperties properties, AiDelegationCodec codec,
+            AiToolDispatcher dispatcher, AiToolEnvelopeAssembler assembler, List<AiToolRegistration> registrations) {
+        return new AiInternalQueryController(properties, codec, dispatcher, assembler, registrations, Clock.systemUTC());
+    }
+
+    @Bean
+    @Order(INTERNAL_ORDER)
+    SecurityFilterChain aiInternalSecurityFilterChain(HttpSecurity http, AiInternalQueryController controller) throws Exception {
+        Filter endpoint = (input, output, chain) -> controller.handle((HttpServletRequest) input, (HttpServletResponse) output);
+        return http.securityMatcher(request -> request.getMethod().equals("POST")
+                        && AiBrowserController.path(request).equals(AiInternalQueryController.PATH))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(cache -> cache.disable()).securityContext(context -> context.disable())
+                .csrf(csrf -> csrf.disable()).headers(headers -> headers.cacheControl(cache -> cache.disable()))
+                .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
+                .addFilterBefore(endpoint, AuthorizationFilter.class).build();
+    }
 
     @Bean
     SmartInitializingSingleton aiHostSecurityChainValidator(ConfigurableListableBeanFactory beanFactory) {

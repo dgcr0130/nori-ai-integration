@@ -414,7 +414,7 @@ class AiConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context.getBeanNamesForType(SecurityFilterChain.class))
-                            .containsExactlyInAnyOrder("aiBrowserSecurityFilterChain", "hostSecurityFilterChain");
+                            .containsExactlyInAnyOrder("aiInternalSecurityFilterChain", "aiBrowserSecurityFilterChain", "hostSecurityFilterChain");
                     assertThat(context.containsBean("aiHostSecurityChainValidator")).isTrue();
                 });
     }

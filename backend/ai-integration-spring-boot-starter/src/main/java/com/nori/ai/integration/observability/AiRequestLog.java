@@ -16,14 +16,15 @@ public final class AiRequestLog {
     public static final String ATTRIBUTE = AiRequestLog.class.getName();
     private static final Logger LOG = LoggerFactory.getLogger(AiRequestLog.class);
     private static final JsonMapper JSON = JsonMapper.builder().build();
-    private static final Set<String> STAGES = Set.of("identity", "sign", "connect", "relay");
+    private static final Set<String> STAGES = Set.of("identity", "sign", "connect", "relay", "delegate", "handler");
     private static final Set<String> CODES = Set.of("LOGIN_REQUIRED", "AUTH_UNAVAILABLE", "AUTH_RESULT_INVALID", "SIGNING_FAILED",
             "CSRF_INVALID", "GATEWAY_TIMEOUT", "GATEWAY_UNAVAILABLE", "INPUT_INVALID", "ROUTE_NOT_FOUND",
             "INVALID_INPUT", "NOT_FOUND", "REVIEW_CONFLICT", "REVIEW_FORBIDDEN", "ANSWER_NOT_READY", "KNOWLEDGE_UNAVAILABLE",
             "REQUEST_FORBIDDEN", "AUTHENTICATION_FAILED", "IDEMPOTENCY_KEY_CONFLICT", "CONVERSATION_ACTIVE",
             "QUEUE_FULL", "MODEL_LOADING", "MODEL_CONTEXT_MISMATCH", "MODEL_DIGEST_MISMATCH", "INFERENCE_UNAVAILABLE",
             "INPUT_BUDGET_EXCEEDED", "PLAN_INVALID", "LLM_UNAVAILABLE", "RESOURCE_NOT_FOUND", "TIME_WINDOW_REQUIRED",
-            "QUEUE_TIMEOUT", "WORKER_INTERRUPTED", "CONTRACT_INVALID", "SYSTEM_SCOPE_MISMATCH");
+            "QUEUE_TIMEOUT", "WORKER_INTERRUPTED", "CONTRACT_INVALID", "SYSTEM_SCOPE_MISMATCH",
+            "SERVICE_AUTH_INVALID", "DELEGATION_DENIED", "DELEGATION_CHANGED", "TOOL_NOT_FOUND", "SOURCE_BUSY", "SOURCE_UNAVAILABLE", "TIMEOUT");
     private final String system;
     private final UUID requestId = UUID.randomUUID();
     private final long started = System.nanoTime();
@@ -36,6 +37,15 @@ public final class AiRequestLog {
         LOG.info("systemId={} integrationVersion={} requestId={} gatewayRequestId={} jobId={} toolId=null direction=browser-to-gateway stage={} httpStatus={} code={} elapsedMs={}",
                 system, AiIntegrationAutoConfiguration.INTEGRATION_VERSION, requestId, identifier(gatewayRequestId),
                 identifier(jobId), stage, status, safeCode(code), (System.nanoTime() - started) / 1_000_000);
+    }
+
+    public void internal(String stage, Integer status, String code, String jobId, String toolId) {
+        if (!STAGES.contains(stage)) throw new IllegalArgumentException("AI 로그 단계가 잘못되었습니다.");
+        if (code != null && !CODES.contains(code)) throw new IllegalArgumentException("AI 로그 코드가 정의되지 않았습니다.");
+        String tool = toolId != null && toolId.matches("[A-Za-z0-9_.-]{1,128}") ? toolId : null;
+        LOG.info("systemId={} integrationVersion={} requestId={} gatewayRequestId=null jobId={} toolId={} direction=gateway-to-system stage={} httpStatus={} code={} elapsedMs={}",
+                system, AiIntegrationAutoConfiguration.INTEGRATION_VERSION, requestId, identifier(jobId), tool,
+                stage, status, code, (System.nanoTime() - started) / 1_000_000);
     }
 
     public void error(HttpServletResponse response, Failure failure) throws IOException {

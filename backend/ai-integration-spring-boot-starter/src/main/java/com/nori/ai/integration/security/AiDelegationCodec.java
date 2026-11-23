@@ -110,7 +110,7 @@ public final class AiDelegationCodec {
             Mac hmac = Mac.getInstance("HmacSHA256");
             hmac.init(new SecretKeySpec(key, "HmacSHA256"));
             return hmac.doFinal(bytes.toByteArray());
-        } catch (GeneralSecurityException | IOException failure) {
+        } catch (GeneralSecurityException | IOException | IllegalArgumentException failure) {
             throw new AiIdentityService.Failure(500, "SIGNING_FAILED", "sign");
         }
     }
