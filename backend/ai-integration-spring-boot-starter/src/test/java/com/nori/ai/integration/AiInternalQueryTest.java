@@ -325,7 +325,7 @@ class AiInternalQueryTest {
         try (var f = new Fixture(directory)) {
             var body = f.body(); body.put("deadline", PhaseTwoFixtures.NOW.plusSeconds(300).toString());
             for (int processIndex = 0; processIndex < 2; processIndex++) {
-                var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java.exe").toString(), "-cp", System.getProperty("ai.integration.test.classpath"), QueryProcess.class.getName()).start();
+                var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp", System.getProperty("ai.integration.test.classpath"), QueryProcess.class.getName()).start();
                 try {
                     try (var stdin = process.getOutputStream()) {
                         stdin.write(PhaseTwoFixtures.JSON.writeValueAsBytes(Map.of("body", body, "key", f.properties.delegationKeyFile().toString(), "gateway", f.properties.gatewayTokenFile().toString())));

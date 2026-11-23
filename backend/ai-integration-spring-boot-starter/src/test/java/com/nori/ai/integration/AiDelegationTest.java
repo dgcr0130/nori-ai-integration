@@ -126,7 +126,7 @@ class AiDelegationTest {
         var properties = properties(List.of("AI_READ", "AI_REVIEW"));
         String token = codec(properties, PhaseTwoFixtures.NOW).issue("actor", Set.of("AI_READ"));
         for (int index = 0; index < 2; index++) {
-            var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java.exe").toString(), "-cp",
+            var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp",
                     System.getProperty("ai.integration.test.classpath"), VerifierProcess.class.getName()).start();
             try {
                 try (var input = process.getOutputStream()) {
