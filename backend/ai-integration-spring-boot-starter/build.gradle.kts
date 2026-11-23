@@ -20,8 +20,13 @@ dependencies {
     api("org.springframework.boot:spring-boot-autoconfigure")
     api("jakarta.servlet:jakarta.servlet-api")
     implementation("tools.jackson.core:jackson-databind")
+    implementation("org.springframework.security:spring-security-config")
+    implementation("org.springframework.security:spring-security-web")
+    implementation("org.apache.httpcomponents.client5:httpclient5")
+    implementation("org.slf4j:slf4j-api")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-starter-webmvc")
+    testImplementation("org.springframework.boot:spring-boot-security")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -80,6 +85,7 @@ tasks.test {
     dependsOn(tasks.jar)
     systemProperty("ai.integration.jar", tasks.jar.flatMap { it.archiveFile }.get().asFile.absolutePath)
     systemProperty("ai.integration.front", frontDirectory.asFile.absolutePath)
+    systemProperty("ai.integration.test.classpath", sourceSets.test.get().runtimeClasspath.asPath)
     testLogging { events("passed", "skipped", "failed") }
 }
 

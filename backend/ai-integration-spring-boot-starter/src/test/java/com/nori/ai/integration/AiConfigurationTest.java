@@ -48,9 +48,19 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.env.PropertiesPropertySourceLoader;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.boot.security.autoconfigure.SecurityAutoConfiguration;
+import org.springframework.boot.security.autoconfigure.web.servlet.ServletWebSecurityAutoConfiguration;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.io.FileSystemResource;
 
@@ -117,6 +127,7 @@ class AiConfigurationTest {
     void emptyToolsAndNoHandlersStartAndCollectionsAreImmutable() {
         configured(valid).run(context -> {
             assertThat(context).hasNotFailed();
+            assertThat(context.containsBean("aiHostSecurityChainValidator")).isFalse();
             AiIntegrationProperties properties = context.getBean(AiIntegrationProperties.class);
             assertThat(properties.tools()).isEmpty();
             assertThat(properties.browserCredential()).isEqualTo(AiIntegrationProperties.BrowserCredential.COOKIE);
@@ -384,6 +395,67 @@ class AiConfigurationTest {
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     static class ConsumerApplication {}
+
+    @Test
+    void enabledServletWithoutHostChainFailsInsteadOfRemovingBootProtection() {
+        servletRunner().withConfiguration(AutoConfigurations.of(AiIntegrationAutoConfiguration.class))
+                .withInitializer(context -> context.getEnvironment().getPropertySources()
+                        .addFirst(new MapPropertySource("fixture", new LinkedHashMap<>(valid))))
+                .run(context -> assertThat(context).hasFailed().getFailure()
+                        .hasStackTraceContaining("AI 연동을 켜려면 호스트 앱에 기존 업무 Spring Security 체인이 필요합니다."));
+    }
+
+    @Test
+    void enabledServletWithHostChainKeepsThatChainAndStarts() {
+        servletRunner().withConfiguration(AutoConfigurations.of(AiIntegrationAutoConfiguration.class))
+                .withUserConfiguration(HostSecurity.class)
+                .withInitializer(context -> context.getEnvironment().getPropertySources()
+                        .addFirst(new MapPropertySource("fixture", new LinkedHashMap<>(valid))))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBeanNamesForType(SecurityFilterChain.class))
+                            .containsExactlyInAnyOrder("aiBrowserSecurityFilterChain", "hostSecurityFilterChain");
+                    assertThat(context.containsBean("aiHostSecurityChainValidator")).isTrue();
+                });
+    }
+
+    @Test
+    void disabledServletKeepsBootDefaultSecurityBeansUnchanged() {
+        var baseline = servletRunner();
+        baseline.run(original -> {
+            assertThat(original).hasNotFailed();
+            assertThat(original.getBeansOfType(SecurityFilterChain.class)).hasSize(1);
+            baseline.withConfiguration(AutoConfigurations.of(AiIntegrationAutoConfiguration.class))
+                    .withPropertyValues(PREFIX + "enabled=false")
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBeanDefinitionNames()).containsExactlyInAnyOrder(original.getBeanDefinitionNames());
+                        assertThat(context.containsBean("aiHostSecurityChainValidator")).isFalse();
+                        assertThat(context.getBeanNamesForType(SecurityFilterChain.class))
+                                .containsExactlyInAnyOrder(original.getBeanNamesForType(SecurityFilterChain.class));
+                    });
+        });
+    }
+
+    private WebApplicationContextRunner servletRunner() {
+        return new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(SecurityAutoConfiguration.class, ServletWebSecurityAutoConfiguration.class))
+                .withUserConfiguration(MvcHost.class)
+                .withBean("resolver", AiRequestIdentityResolver.class, () -> RESOLVER)
+                .withBean(UserDetailsService.class, () -> new InMemoryUserDetailsManager(
+                        User.withUsername("fixture-host").password("{noop}fixture-password").roles("USER").build()));
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableWebMvc
+    static class MvcHost {}
+
+    @Configuration(proxyBeanMethods = false)
+    static class HostSecurity {
+        @Bean SecurityFilterChain hostSecurityFilterChain(HttpSecurity http) throws Exception {
+            return http.securityMatcher("/business/**").authorizeHttpRequests(authorize -> authorize.anyRequest().denyAll()).build();
+        }
+    }
 
     private void assertDuplicateSourceFails(Path path) throws IOException {
         var sources = new PropertiesPropertySourceLoader().load("duplicate", new FileSystemResource(path));

@@ -2,6 +2,7 @@ package com.nori.ai.integration.config;
 
 import com.nori.ai.integration.api.AiRequestIdentityResolver;
 import com.nori.ai.integration.api.AiToolRegistration;
+import com.nori.ai.integration.security.AiSecurityConfiguration;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashSet;
@@ -21,11 +22,13 @@ import org.springframework.boot.context.properties.bind.handler.NoUnboundElement
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Import;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 
 @AutoConfiguration
 @Conditional(AiIntegrationAutoConfiguration.EnabledCondition.class)
+@Import(AiSecurityConfiguration.class)
 public class AiIntegrationAutoConfiguration {
     public static final String INTEGRATION_VERSION = readVersion();
 
