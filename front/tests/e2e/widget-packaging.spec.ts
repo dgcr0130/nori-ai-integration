@@ -42,7 +42,7 @@ test('단일 스크립트가 호스트 없이 한 번만 태그를 정의한다'
       hostReact: Reflect.has(window, 'React'),
     }
   })
-  expect(state).toEqual({ count: 1, version: '1.0.0', registered: true, shadow: true, hostReact: false })
+  expect(state).toEqual({ count: 1, version: '1.0.1', registered: true, shadow: true, hostReact: false })
   expect(requests.filter(url => url !== 'https://widget.test/')).toEqual([
     'https://widget.test/widget.js', 'https://widget.test/widget.js',
   ])

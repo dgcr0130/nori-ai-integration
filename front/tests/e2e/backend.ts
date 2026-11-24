@@ -202,7 +202,7 @@ export class TestBackend {
     }
     if (!request.subject) { this.json(response, 401, { code: 'LOGIN_REQUIRED', message: '로그인이 필요합니다.', requestId: 'test-request' }); return }
     if (path === '/api/ai/session') {
-      this.json(response, 200, { subject: request.subject, canReview: this.reviewers.has(request.subject), integrationVersion: '1.0.0',
+      this.json(response, 200, { subject: request.subject, canReview: this.reviewers.has(request.subject), integrationVersion: '1.0.1',
         csrf: request.headers.authorization ? null : { headerName: 'X-Nori-AI-CSRF', token: 'fake-csrf' } }); return
     }
     if (['POST', 'PUT', 'DELETE'].includes(request.method) && !request.headers.authorization && request.headers['x-nori-ai-csrf'] !== 'fake-csrf') {
