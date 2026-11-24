@@ -1,4 +1,5 @@
 import { object, text, ApiFailure } from './api'
+import { statusLabel } from './readable'
 
 export interface FeedbackReceipt { feedbackId: string; version: number; state: string }
 export interface FeedbackDraft { comment: string; receipt: FeedbackReceipt | null; busy: boolean }
@@ -22,15 +23,15 @@ export function feedbackError(error: unknown): unknown {
 }
 
 export function Receipt({ value }: { value: FeedbackReceipt }) {
-  return <p>feedbackId: {value.feedbackId} · version: {value.version} · state: {value.state}</p>
+  return <p className="muted" role="status">접수되었습니다. · {statusLabel(value.state)} · {value.version}차</p>
 }
 
 export function Feedback({ draft, change, submit }: {
   draft: FeedbackDraft; change: (comment: string) => void; submit: (rating: 'UP' | 'DOWN') => void
 }) {
   return <section aria-label="피드백">
-    <label>지적<textarea aria-label="지적" value={draft.comment} disabled={draft.busy} onChange={event => change(event.target.value)} /></label>
-    <p>{characterCount(draft.comment)} / 2000자</p>
+    <details><summary>의견 남기기</summary><label>지적<textarea aria-label="지적" value={draft.comment} disabled={draft.busy} onChange={event => change(event.target.value)} /></label>
+    <p className="muted">{characterCount(draft.comment)} / 2000자</p></details>
     <button disabled={draft.busy} onClick={() => submit('UP')}>도움이 됨</button>
     <button disabled={draft.busy} onClick={() => submit('DOWN')}>도움이 안 됨</button>
     {draft.receipt && <Receipt value={draft.receipt} />}

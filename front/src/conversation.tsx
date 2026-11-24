@@ -1,8 +1,10 @@
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore, useState } from 'react'
 import { AiApi, ApiFailure, LoginRequired, TransportFailure, object, questionContext, text, type Session } from './api'
 import { readEvents, terminalEvents } from './stream'
 import { Feedback, emptyFeedback, characterCount, feedbackReceipt, feedbackError, type FeedbackDraft } from './feedback'
-import { Review, emptyReview, emptyReviewDraft, reviewList, reviewDetail, reviewAction, type ReviewState, type ReviewStatus, type ReviewDraft } from './review'
+import { Review, ReviewList, emptyReview, emptyReviewDraft, reviewList, reviewDetail, reviewAction, type ReviewState, type ReviewStatus, type ReviewDraft } from './review'
+import { Icon } from './icons'
+import { ReadableValue, statusLabel } from './readable'
 
 interface Accepted { jobId: string; conversationId: string; messageId: string; queuePosition: number }
 interface LogicalQuestion { path: string; body: string; key: string; query: string }
@@ -14,7 +16,7 @@ interface Result { jobId: string; jobStatus: string; answer: Answer | null; bloc
 interface Message { id: string; role: string; content: string | Result }
 interface Job { accepted: Accepted; active: boolean; lastId: string; interrupted: boolean }
 interface State {
-  tab: 'conversation' | 'list' | 'review'; query: string; conversationId: string | null
+  tab: 'conversation' | 'review'; sidebar: boolean; validating: boolean; query: string; conversationId: string | null
   items: ConversationEntry[]; nextAfter: string | null; messages: Message[]
   job: Job | null; retry: LogicalQuestion | null; progress: string[]
   notice: string; retryAfter: string | null; evidence: string; exported: string
@@ -23,7 +25,7 @@ interface State {
 }
 
 const initialState = (): State => ({
-  tab: 'conversation', query: '', conversationId: null, items: [], nextAfter: null, messages: [],
+  tab: 'conversation', sidebar: false, validating: false, query: '', conversationId: null, items: [], nextAfter: null, messages: [],
   job: null, retry: null, progress: [], notice: '', retryAfter: null, evidence: '', exported: '',
   busy: false, ready: false, cancelResult: '',
   canReview: false, review: emptyReview(), feedback: {},
@@ -72,6 +74,10 @@ export class ConversationModel {
   private sourceRevision = 0
   private exportRevision = 0
   private reviewRevision = 0
+  private validation: Promise<void> | null = null
+  private validationController: AbortController | null = null
+  private focusRevision = 0
+  private conversationRevision = 0
 
   constructor(private readonly api: AiApi) {}
   snapshot = (): State => this.state
@@ -96,6 +102,7 @@ export class ConversationModel {
     this.state = initialState()
   }
   dispose(): void {
+    this.validationController?.abort(); this.focusRevision++
     this.clear(); this.api.dispose(); this.disposed = true; this.listeners.clear()
   }
   private clearSources(): void {
@@ -125,9 +132,9 @@ export class ConversationModel {
     this.assertCurrent(generation)
     return result
   }
-  private async refreshSession(): Promise<boolean> {
+  private async refreshSession(signal?: AbortSignal): Promise<boolean> {
     const generation = this.generation
-    const next = await this.api.session()
+    const next = await this.api.session(signal)
     this.assertCurrent(generation)
     const changed = this.sessionValue !== null && this.sessionValue.subject !== next.subject
     if (changed) this.clear()
@@ -147,12 +154,45 @@ export class ConversationModel {
     })
     this.update({ items, nextAfter: list.nextAfter === null ? null : text(list.nextAfter) })
   }
-  initialize = (): Promise<void> => this.task(async () => { await this.refreshSession(); await this.loadList() })
-  focus = (): Promise<void> => this.task(async () => {
-    if (await this.refreshSession()) await this.loadList()
-  })
+  focus = (reopen = false): Promise<void> => {
+    if (this.validation && !reopen) return this.validation
+    const revision = ++this.focusRevision
+    this.validationController?.abort()
+    const controller = new AbortController()
+    this.validationController = controller
+    this.update({ validating: true })
+    this.clearSources()
+    this.validation = (async () => {
+      let same: boolean
+      try {
+        same = await this.refreshSession(controller.signal)
+      } catch (error) {
+        if (this.disposed || revision !== this.focusRevision) return
+        // 세션을 확인하지 못한 경우에는 보관한 권한의 유효성을 가정하지 않는다.
+        this.clear()
+        this.failure(error)
+        return
+      }
+      if (revision !== this.focusRevision) return
+      // 인증 성공 후 자료 조회 실패는 인증 실패로 바꾸지 않는다.
+      if (same) await this.task(async () => {
+        await this.loadList()
+        if (this.state.conversationId && !this.state.job?.active) await this.loadConversation(this.state.conversationId)
+        const previous = this.state.review.detail
+        if (this.state.canReview && previous) {
+          const detail = reviewDetail(await this.reviewRequest(`/v1/reviews/${encodeURIComponent(previous.feedback.feedbackId)}`))
+          this.setReview({ detail, ...(detail.feedback.version !== previous.feedback.version ? { draft: emptyReviewDraft() } : {}) })
+        }
+      })
+    })().finally(() => {
+      if (revision !== this.focusRevision) return
+      this.validation = null; this.validationController = null; this.update({ validating: false })
+    })
+    return this.validation
+  }
   setQuery(value: string): void { this.update({ query: value }) }
   setTab(value: State['tab']): void { this.update({ tab: value }) }
+  setSidebar(value: boolean): void { this.update({ sidebar: value }) }
   private setReview(value: Partial<ReviewState>): void { this.update({ review: { ...this.state.review, ...value } }) }
   private clearReview(): void {
     this.reviewRevision++
@@ -229,7 +269,7 @@ export class ConversationModel {
   }
   reviewTab = (): Promise<void> => this.reviewTask(async () => {
     await this.loadReviews()
-    this.update({ tab: 'review' })
+    this.update({ tab: 'review', sidebar: true })
   })
   reviews = (status: ReviewStatus): Promise<void> => this.reviewTask(async () => {
     this.setReview({ status, items: [], nextAfter: null, detail: null, draft: emptyReviewDraft() })
@@ -275,9 +315,11 @@ export class ConversationModel {
   })
 
   private async loadConversation(id: string): Promise<void> {
+    const revision = this.conversationRevision
     this.clearSources()
     try {
       const detail = object(await this.request(`/v1/conversations/${encodeURIComponent(id)}`))
+      if (revision !== this.conversationRevision) throw new DOMException('종료된 대화입니다.', 'AbortError')
       const conversation = object(detail.conversation)
       const messages = array(detail.messages).map(entry => {
         const message = object(entry)
@@ -286,8 +328,13 @@ export class ConversationModel {
       })
       this.update({ conversationId: text(conversation.id), messages, evidence: '', exported: '' })
     } catch (error) {
-      if (error instanceof ApiFailure && error.status === 404) {
-        if (this.state.conversationId === id) this.update({ conversationId: null, messages: [], evidence: '', exported: '' })
+      if (error instanceof ApiFailure && (error.status === 404 || error.status === 403)) {
+        if (this.state.conversationId === id) {
+          this.conversationRevision++
+          this.stream?.abort(); this.stream = null
+          this.clearSources()
+          this.update({ conversationId: null, query: '', messages: [], job: null, progress: [], retry: null, feedback: {}, cancelResult: '', evidence: '', exported: '' })
+        }
       }
       throw error
     }
@@ -380,7 +427,9 @@ export class ConversationModel {
     if (failure !== undefined) this.failure(failure)
   })
   private async loadResult(jobId: string): Promise<void> {
+    const revision = this.conversationRevision
     const result = resultView(await this.request(`/v1/analyses/${encodeURIComponent(jobId)}`))
+    if (revision !== this.conversationRevision) throw new DOMException('종료된 대화입니다.', 'AbortError')
     if (result.denied) this.clearSources()
     const messages = this.state.messages.filter(message => typeof message.content === 'string' || message.content.jobId !== jobId)
     messages.push({ id: `result-${jobId}`, role: 'assistant', content: result })
@@ -396,7 +445,7 @@ export class ConversationModel {
     const job = this.state.job
     if (!job?.active) return
     await this.request(`/v1/analyses/${encodeURIComponent(job.accepted.jobId)}/cancel`, { method: 'POST' })
-    this.update({ cancelResult: '취소 요청: HTTP 204' })
+    this.update({ cancelResult: '취소를 요청했습니다.' })
     await this.loadResult(job.accepted.jobId)
   })
   remove = (id: string): Promise<void> => this.command(async () => {
@@ -443,80 +492,130 @@ export class ConversationModel {
 function AnswerView({ result, model }: { result: Result; model: ConversationModel }) {
   if (result.denied) return <p>결과를 읽을 권한이 없습니다.</p>
   return <section aria-label="답변">
-    <p>{result.jobStatus}</p>
+    <p className="muted">{statusLabel(result.jobStatus)}</p>
     {result.answer && <>
-      <p>{result.answer.kind === 'NO_EVIDENCE' ? '근거 없음' : result.answer.kind}</p>
+      {result.answer.kind === 'NO_EVIDENCE' && <p>근거 없음</p>}
       <p className="answer-text">{result.answer.text}</p>
-      {result.answer.citations.map(citation => <div key={citation.number}>
-        <button onClick={() => void model.evidence(result.jobId, citation.evidenceId)}>근거 {citation.number}</button>
-        <span>{citation.sourceType} {JSON.stringify(citation.location)}</span>
-      </div>)}
+      {result.answer.citations.length > 0 && <details className="sources"><summary>참고 자료 {result.answer.citations.length}개</summary>
+        {result.answer.citations.map(citation => <div key={citation.number}>
+          <button onClick={() => void model.evidence(result.jobId, citation.evidenceId)}>근거 {citation.number}</button>
+          <span>{statusLabel(citation.sourceType)}</span><ReadableValue value={citation.location} />
+        </div>)}
+      </details>}
       <Feedback draft={model.snapshot().feedback[result.jobId] ?? emptyFeedback()}
         change={comment => model.changeFeedback(result.jobId, comment)} submit={rating => void model.feedback(result.jobId, rating)} />
     </>}
-    {result.blocks.map(block => <div key={block.id}>
-      <pre>{JSON.stringify(block.value, null, 2)}</pre>
-      <button onClick={() => void model.export(result.jobId, block.id)}>내보내기 {block.id}</button>
-    </div>)}
+    {result.blocks.length > 0 && <details><summary>추가 자료 · 내보내기</summary>{result.blocks.map((block, index) => <div key={block.id}>
+      <ReadableValue value={block.value} />
+      <button onClick={() => void model.export(result.jobId, block.id)}>자료 {index + 1} 내보내기</button>
+    </div>)}</details>}
   </section>
+}
+
+function progressLabel(progress: string[], interrupted: boolean): string {
+  if (interrupted) return '연결이 끊겼습니다. 다시 연결해 주세요.'
+  const event = progress.at(-1)?.split(' ')[0]
+  return ({ 'job.queued': '답변을 기다리고 있습니다.', 'job.started': '답변을 준비하고 있습니다.',
+    'tool.started': '자료를 확인하고 있습니다.', 'tool.completed': '자료 확인을 마쳤습니다.',
+    'job.completed': '답변이 완료되었습니다.', 'job.partial': '일부 답변이 완료되었습니다.',
+    'job.cancelled': '질문이 취소되었습니다.', 'job.failed': '답변 처리 중 오류가 발생했습니다.',
+  } as Record<string, string>)[event ?? ''] ?? '답변을 준비하고 있습니다.'
 }
 
 export function Conversation({ model, close }: { model: ConversationModel; close: () => void }) {
   const state = useSyncExternalStore(model.subscribe, model.snapshot)
+  const sidebarButton = useRef<HTMLButtonElement>(null)
+  const sidebar = useRef<HTMLElement>(null)
+  const main = useRef<HTMLElement>(null)
+  const follow = useRef(true)
+  const returnFocus = useRef(false)
+  const [narrow, setNarrow] = useState(() => innerWidth < 720)
+  const protectedView = state.ready && !state.validating
+  const showingSidebar = protectedView && state.sidebar
+  const reviewMode = state.tab === 'review' && state.canReview
   useEffect(() => {
-    void model.initialize()
-    const focus = () => { void model.focus() }
-    window.addEventListener('focus', focus)
-    return () => { window.removeEventListener('focus', focus); model.dispose() }
-  }, [model])
+    const resize = () => setNarrow(innerWidth < 720)
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [])
+  useEffect(() => {
+    if (showingSidebar && narrow) sidebar.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    if (!showingSidebar && returnFocus.current) { sidebarButton.current?.focus(); returnFocus.current = false }
+  }, [showingSidebar, narrow])
+  useEffect(() => {
+    if (follow.current && main.current) main.current.scrollTop = main.current.scrollHeight
+  }, [state.messages, state.progress])
+  const closeSidebar = () => { returnFocus.current = true; model.setSidebar(false) }
   const locked = state.busy || Boolean(state.job?.active) || state.retry !== null
-  return <section className="panel" aria-label="AI 대화">
-    <header><strong>AI 대화</strong><button onClick={close}>닫기</button></header>
-    <nav aria-label="탭">
-      <button aria-pressed={state.tab === 'conversation'} onClick={() => model.setTab('conversation')}>대화</button>
-      <button aria-pressed={state.tab === 'list'} onClick={() => model.setTab('list')}>대화 목록</button>
-      {state.canReview && <button aria-pressed={state.tab === 'review'} disabled={state.review.busy} onClick={() => void model.reviewTab()}>검토</button>}
-      <button disabled={!state.ready || locked} onClick={() => void model.create()}>새 대화</button>
-    </nav>
-    {state.notice && <p role="alert">{state.notice}</p>}
-    {state.retryAfter && <p>Retry-After: {state.retryAfter}</p>}
-    <main>
-      {state.ready && state.canReview && state.tab === 'review' && <Review state={state.review}
-        list={status => void model.reviews(status)} next={() => void model.nextReviews()} open={id => void model.openReview(id)}
-        change={draft => model.changeReview(draft)} submit={() => void model.resolveReview()} />}
-      {state.ready && state.tab === 'list' && <section aria-label="대화 목록">
-        {state.items.length === 0 && <p>대화가 없습니다.</p>}
-        {state.items.map(item => <article key={item.id}>
-          <button disabled={locked} onClick={() => void model.open(item.id)}>{item.title ?? '새 대화'}</button>
-          <button aria-label={`${item.title ?? '새 대화'} 삭제`} disabled={state.busy} onClick={() => void model.remove(item.id)}>삭제</button>
-        </article>)}
-        {state.nextAfter !== null && <button onClick={() => void model.next()}>다음 쪽</button>}
-        <button onClick={() => void model.reload()}>목록·상세 새로고침</button>
-      </section>}
-      {state.ready && state.tab === 'conversation' && <section aria-label="대화 내용">
-        {state.messages.map(message => <article key={message.id}>
-          <p>{message.role}</p>
-          {typeof message.content === 'string' ? <p className="answer-text">{message.content}</p> : <AnswerView result={message.content} model={model} />}
-        </article>)}
-      </section>}
-      {state.job && <section aria-label="질문 진행">
-        <p>jobId: {state.job.accepted.jobId}</p><p>conversationId: {state.job.accepted.conversationId}</p>
-        <p>messageId: {state.job.accepted.messageId}</p><p>queuePosition: {state.job.accepted.queuePosition}</p>
-        <div role="log">{state.progress.map((event, index) => <p key={index}>{event}</p>)}</div>
-        {state.job.interrupted && state.job.active && <button onClick={() => void model.reconnect()}>다시 연결</button>}
-        <button onClick={() => void model.result()}>결과 다시 조회</button>
-      </section>}
-      {state.cancelResult && <p>{state.cancelResult}</p>}
-      {state.evidence && <pre aria-label="근거 본문">{state.evidence}</pre>}
-      {state.exported && <section aria-label="내보내기 결과"><pre>{state.exported}</pre>
-        <a download="nori-ai-block.json" href={`data:application/json;charset=utf-8,${encodeURIComponent(state.exported)}`}>다운로드</a>
-      </section>}
-    </main>
-    <footer>
-      <label>질문<textarea value={state.query} disabled={!state.ready || locked} onChange={event => model.setQuery(event.target.value)} /></label>
-      <button disabled={!state.ready || locked || !state.query.trim()} onClick={() => void model.send()}>보내기</button>
-      <button disabled={!state.job?.active} onClick={() => void model.cancel()}>취소</button>
-      {state.retry && <button disabled={state.busy} onClick={() => void model.retry()}>다시 보내기</button>}
-    </footer>
+  return <section className={`panel${showingSidebar ? ' expanded' : ''}`} aria-label="AI 대화">
+    {showingSidebar && <>
+      {narrow && <div className="drawer-backdrop" onClick={closeSidebar} />}
+      <aside ref={sidebar} aria-label={reviewMode ? '검토 사이드바' : '대화 사이드바'} onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeSidebar() }
+        if (event.key !== 'Tab' || !narrow) return
+        const controls = Array.from(sidebar.current?.querySelectorAll<HTMLElement>('button:not(:disabled),select:not(:disabled),a[href]') ?? [])
+        const active = sidebar.current?.getRootNode() instanceof ShadowRoot ? (sidebar.current.getRootNode() as ShadowRoot).activeElement : document.activeElement
+        if (event.shiftKey && active === controls[0]) { event.preventDefault(); controls.at(-1)?.focus() }
+        else if (!event.shiftKey && active === controls.at(-1)) { event.preventDefault(); controls[0]?.focus() }
+      }}>
+        <div className="aside-heading"><strong>{reviewMode ? '검토 목록' : '대화 목록'}</strong><button className="icon-button" aria-label="목록 닫기" title="목록 닫기" onClick={closeSidebar}><Icon name="close" /></button></div>
+        {reviewMode ? <ReviewList state={state.review} list={status => void model.reviews(status)} next={() => void model.nextReviews()} open={id => { void model.openReview(id); if (narrow) closeSidebar() }} />
+          : <section aria-label="대화 목록">
+            {state.items.length === 0 && <p className="muted">대화가 없습니다.</p>}
+            {state.items.map(item => <article className="conversation-row" key={item.id}>
+              <button aria-current={state.conversationId === item.id ? 'true' : undefined} disabled={locked} onClick={() => { void model.open(item.id); if (narrow) closeSidebar() }}>{item.title ?? '새 대화'}</button>
+              <button className="delete-button" aria-label={`${item.title ?? '새 대화'} 삭제`} disabled={state.busy} onClick={() => void model.remove(item.id)}>삭제</button>
+            </article>)}
+            {state.nextAfter !== null && <button onClick={() => void model.next()}>다음 쪽</button>}
+            <button className="reload-button" onClick={() => void model.reload()}>목록·상세 새로고침</button>
+          </section>}
+      </aside>
+    </>}
+    <div className="chat-column" inert={showingSidebar && narrow}>
+      <header>
+        <button ref={sidebarButton} className="icon-button" aria-label={reviewMode ? '검토 목록' : '대화 목록'} aria-expanded={showingSidebar} title="목록 열기" disabled={!protectedView} onClick={() => model.setSidebar(!state.sidebar)}><Icon name="sidebar" /></button>
+        <strong>Nori AI</strong>
+        {!reviewMode && <button className="icon-button" aria-label="새 대화" title="새 대화" disabled={!protectedView || locked} onClick={() => void model.create()}><Icon name="new" /></button>}
+        <button className="icon-button" aria-label="AI 대화 최소화" title="최소화" onClick={close}><Icon name="close" /></button>
+      </header>
+      {protectedView && state.canReview && <nav className="mode-switch" aria-label="작업 모드">
+        <button aria-pressed={!reviewMode} onClick={() => model.setTab('conversation')}>대화</button>
+        <button aria-pressed={reviewMode} disabled={state.review.busy} onClick={() => void model.reviewTab()}>검토</button>
+      </nav>}
+      {state.validating && <p role="status" className="session-status">로그인 정보를 확인하고 있습니다.</p>}
+      {state.notice && <p role="alert">{state.notice}</p>}
+      {state.retryAfter && <p className="session-status">다시 시도할 수 있는 시간: {state.retryAfter}초 후</p>}
+      <main ref={main} onScroll={() => { const node = main.current; if (node) follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48 }}>
+        {protectedView && (reviewMode ? <Review state={state.review} change={draft => model.changeReview(draft)} submit={() => void model.resolveReview()} /> : <>
+          {state.messages.length === 0 && <div className="welcome"><div className="welcome-icon"><Icon name="chat" /></div><h2>무엇을 도와드릴까요?</h2><p className="muted">업무에 필요한 내용을 질문해 주세요.</p></div>}
+          <section aria-label="대화 내용">
+            {state.messages.map(message => <article className={message.role === 'user' ? 'message-user' : 'message-assistant'} key={message.id}>
+              {typeof message.content === 'string' ? <p className="answer-text">{message.content}</p> : <AnswerView result={message.content} model={model} />}
+            </article>)}
+          </section>
+          {state.job && <section className="job-status" aria-label="질문 진행">
+            <div role="log" aria-live="polite" aria-atomic="true">{progressLabel(state.progress, state.job.interrupted)}</div>
+            {state.job.interrupted && state.job.active && <button onClick={() => void model.reconnect()}>다시 연결</button>}
+            <details><summary>진행 확인</summary><button onClick={() => void model.result()}>결과 다시 조회</button></details>
+          </section>}
+          {state.cancelResult && <p>{state.cancelResult}</p>}
+          {state.evidence && <section aria-label="근거 본문"><h3>근거 본문</h3><p className="answer-text">{state.evidence}</p></section>}
+          {state.exported && <section aria-label="내보내기 결과"><ReadableValue value={JSON.parse(state.exported) as unknown} />
+            <a download="nori-ai-block.json" href={`data:application/json;charset=utf-8,${encodeURIComponent(state.exported)}`}>다운로드</a>
+          </section>}
+        </>)}
+      </main>
+      {protectedView && !reviewMode && <footer>
+        <div className="composer"><textarea aria-label="질문" placeholder="질문을 입력해 주세요" value={state.query} disabled={locked} onChange={event => model.setQuery(event.target.value)} onKeyDown={event => {
+          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); if (!locked) { follow.current = true; void model.send() } }
+        }} />
+          <button className="send-button icon-button" aria-label="보내기" title="보내기" disabled={locked || !state.query.trim()} onClick={() => { follow.current = true; void model.send() }}><Icon name="send" /></button>
+        </div>
+        <div className="composer-hint"><span>Enter로 전송 · Shift+Enter로 줄바꿈</span>
+          {state.job?.active && <button onClick={() => void model.cancel()}>취소</button>}
+          {state.retry && <button disabled={state.busy} onClick={() => void model.retry()}>다시 보내기</button>}
+        </div>
+      </footer>}
+    </div>
   </section>
 }

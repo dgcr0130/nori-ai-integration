@@ -108,7 +108,9 @@ return <nori-ai-widget ref={widget} api-base="/prefix/api/ai" />
 
 script는 requestHeaders를 사용할 수 없으므로 **자산 경로만 로그인 없이 읽혀야 합니다**. 모든 요청에 토큰을 요구하는 앞단은 MES api-gateway의 `/sfapp/api/ai/assets/**`처럼 자산 전용 무인증 예외 route를 둡니다. API의 토큰 검사는 유지합니다. 중립 header 예제의 `proxy.mjs`는 `/prefix/api/ai/**`를 `/api/ai/**`로 바꾸며 assets만 예외로 두고 나머지 AI API에 토큰을 요구합니다. 직접 `/api/**`·`/internal/**` 진입은 앞단에서 거절합니다.
 
-배치는 position=`bottom-right`(기본)·`bottom-left`와 CSS 변수 `--nori-ai-width`(400px), `--nori-ai-height`(600px), `--nori-ai-accent`(#2563eb)만 조정합니다. 크기는 양의 CSS 길이이며 화면의 좌우·상하 16px 여백 안으로 제한합니다. 오류는 기본값입니다. 내부 부품 교체·렌더러 주입·새 메뉴·라우트는 없습니다.
+배치는 position=`bottom-right`(기본)·`bottom-left`와 CSS 변수 `--nori-ai-width`(440px), `--nori-ai-height`(600px), `--nori-ai-accent`(#2563eb)만 조정합니다. 크기는 양의 CSS 길이이며 화면 안으로 제한합니다. 기본 모서리 여백은 24px, 좁은 화면은 16px이며 safe-area를 반영합니다. 오류는 기본값입니다. 왼쪽 목록은 넓은 화면에서 224px 확장하고 좁은 화면에서는 키보드로 닫을 수 있는 서랍으로 엽니다. 내부 부품 교체·렌더러 주입·새 메뉴·라우트는 없습니다.
+
+X는 현재 대화·초안·진행 중 질문을 유지한 채 최소화합니다. 재열기와 창 focus에서는 세션 확인이 끝날 때까지 보호 내용을 숨기며 사용자 변경·인증 실패·권한 회수 시 접근할 수 없는 내용을 비웁니다. 태그를 DOM에서 제거하면 요청·스트림·이벤트와 React 화면을 해제합니다. 대화/검토 전환은 `/session`의 `canReview`가 허용한 사용자에게만 보이며 실제 검토 권한은 서버가 계속 검사합니다. 호스트의 `.dark` 클래스 또는 OS 다크 테마를 따릅니다.
 
 ```powershell
 # front 디렉터리. 브라우저 설치가 필요한 환경에서는 npx playwright install chromium을 먼저 수행

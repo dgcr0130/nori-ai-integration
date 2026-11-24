@@ -49,7 +49,7 @@ test('두 실제 Boot 소비 앱에서 같은 위젯·서명·내부 도구·Rea
         if (path.startsWith(prefix + '/') && !path.includes('/assets/')) api.push({ path,
           authorization: request.headers().authorization === `Bearer ${app.login}`, csrf: 'x-nori-ai-csrf' in request.headers() })
       })
-      await page.getByRole('button', { name: 'AI 열기', exact: true }).click()
+      await page.getByRole('button', { name: 'AI 대화 열기', exact: true }).click()
       await expect(page.getByRole('button', { name: '새 대화', exact: true })).toBeEnabled()
       await expect(widget.getByRole('button', { name: '검토', exact: true })).toHaveCount(0)
       await page.getByRole('textbox', { name: '질문', exact: true }).fill('중립 업무 자료를 조회해 주세요.')

@@ -371,7 +371,7 @@ export async function login(context: BrowserContext, backend: TestBackend, subje
 }
 export async function openWidget(page: Page, backend: TestBackend, path = '/a'): Promise<void> {
   await page.goto(backend.origin + path)
-  await page.getByRole('button', { name: 'AI 열기', exact: true }).click()
+  await page.getByRole('button', { name: 'AI 대화 열기', exact: true }).click()
   await expect(page.getByRole('button', { name: '새 대화', exact: true })).toBeEnabled()
 }
 export function questionInput(page: Page) {
@@ -384,6 +384,6 @@ export async function send(page: Page, backend: TestBackend, query = '설비 상
   await expect.poll(() => backend.jobs.size).toBeGreaterThan(previousJobs)
   const jobId = [...backend.jobs.keys()].at(-1)
   if (!jobId) throw new Error('접수된 Job이 없습니다.')
-  await expect(page.getByRole('log')).toContainText('job.queued')
+  await expect(page.getByRole('log')).toContainText('답변을 기다리고 있습니다.')
   return jobId
 }

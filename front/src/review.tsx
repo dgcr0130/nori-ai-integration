@@ -1,4 +1,5 @@
 import { object, text } from './api'
+import { ReadableValue, statusLabel } from './readable'
 import { characterCount, feedbackReceipt, Receipt, type FeedbackReceipt } from './feedback'
 
 export type ReviewStatus = 'OPEN' | 'RESOLVED' | 'REJECTED'
@@ -8,7 +9,10 @@ export interface ReviewDetail {
   feedback: FeedbackEntry; answerId: string; question: string; answer: Record<string, unknown>
   evidence: Record<string, unknown>[]; reviews: Record<string, unknown>[]; questionCase: unknown
 }
-export interface ReviewDraft { cause: Cause; note: string; locations: string; terms: string; sentences: string; expectedFacts: string }
+export interface ReviewDraft {
+  cause: Cause; note: string; locations: string; terms: string; sentences: string; expectedFacts: string
+  citationInputs?: string[]; termInputs?: [string, string][]
+}
 export interface ReviewState {
   status: ReviewStatus; items: FeedbackEntry[]; nextAfter: string | null; detail: ReviewDetail | null
   draft: ReviewDraft; busy: boolean
@@ -94,61 +98,133 @@ export function reviewAction(draft: ReviewDraft, detail: ReviewDetail): Record<s
   }
   const action = { correctAnswer: { sentences }, expectedFacts, locations }
   if (cause !== 'RETRIEVAL') return action
-  const terms = inputObject(json(draft.terms, '용어'), '용어')
+  let terms: Record<string, unknown>
+  if (draft.termInputs === undefined) terms = inputObject(json(draft.terms, '용어'), '용어')
+  else {
+    // 편집 중에는 빈 키와 중복 키도 행으로 보존하고 제출 시에만 유일 키 객체로 만든다.
+    count(draft.termInputs, 1, 20, '용어')
+    const keys = new Set<string>()
+    for (const [term] of draft.termInputs) {
+      if (!term.trim()) throw new Error('용어: 약어를 입력해 주세요.')
+      if (keys.has(term)) throw new Error('용어: 중복된 약어를 확인해 주세요.')
+      keys.add(term)
+    }
+    terms = Object.fromEntries(draft.termInputs)
+  }
   count(Object.keys(terms), 1, 20, '용어')
   for (const value of Object.values(terms)) inputText(value, '용어')
   return { terms, ...action }
 }
 
-export function Review({ state, list, next, open, change, submit }: {
+export function ReviewList({ state, list, next, open }: {
   state: ReviewState; list: (status: ReviewStatus) => void; next: () => void; open: (id: string) => void
-  change: (draft: ReviewDraft) => void; submit: () => void
 }) {
-  const { detail, draft, busy } = state
-  const noteOnly = detail !== null && liveEvidenceOnly(detail)
-  return <section aria-label="검토 내용">
-    <label>검토 상태<select aria-label="검토 상태" value={state.status} disabled={busy} onChange={event => {
+  return <section aria-label="검토 목록">
+    <label>검토 상태<select aria-label="검토 상태" value={state.status} disabled={state.busy} onChange={event => {
       const status = event.target.value
       if (status === 'OPEN' || status === 'RESOLVED' || status === 'REJECTED') list(status)
-    }}>{['OPEN', 'RESOLVED', 'REJECTED'].map(status => <option key={status}>{status}</option>)}</select></label>
-    <button disabled={busy} onClick={() => list(state.status)}>검토 목록 새로고침</button>
-    <section aria-label="검토 목록">
-      {state.items.length === 0 && <p>검토 항목이 없습니다.</p>}
-      {state.items.map(item => <article key={item.feedbackId}>
-        <button disabled={busy} onClick={() => open(item.feedbackId)}>상세 {item.feedbackId}</button>
-        <Receipt value={item} /><p>{item.rating} · {item.comment}</p><p>{item.createdAt} · {item.updatedAt}</p>
-      </article>)}
-      {state.nextAfter !== null && <button disabled={busy} onClick={next}>검토 다음 쪽</button>}
+    }}>{['OPEN', 'RESOLVED', 'REJECTED'].map(status => <option key={status} value={status}>{statusLabel(status)}</option>)}</select></label>
+    <button className="reload-button" disabled={state.busy} onClick={() => list(state.status)}>검토 목록 새로고침</button>
+    {state.items.length === 0 && <p className="muted">검토 항목이 없습니다.</p>}
+    {state.items.map((item, index) => <article className="review-row" key={item.feedbackId}>
+      <button disabled={state.busy} onClick={() => open(item.feedbackId)} aria-label={`검토 항목 ${index + 1}: ${item.comment || "피드백"}`}>
+        <span>{item.comment || '피드백 검토'}</span><small>{statusLabel(item.state)} · {statusLabel(item.rating)}</small>
+      </button>
+    </article>)}
+    {state.nextAfter !== null && <button disabled={state.busy} onClick={next}>검토 다음 쪽</button>}
+  </section>
+}
+
+interface LocationInput { bucket: string; objectKey: string; revision: string; section: string; lineFrom: number; lineTo: number }
+interface SentenceInput { text: string; citations: number[] }
+const newLocation = (): LocationInput => ({ bucket: '', objectKey: '', revision: '', section: '', lineFrom: 1, lineTo: 1 })
+const citationNumbers = (value: string): number[] => value.trim() ? value.split(',').map(number => Number(number.trim())) : []
+
+function CorrectionFields({ draft, busy, change }: { draft: ReviewDraft; busy: boolean; change: (draft: ReviewDraft) => void }) {
+  // 직렬화는 기존 검증·API 계약을 재사용하기 위한 내부 표현이며 편집 화면은 구조화한다.
+  const locations = JSON.parse(draft.locations) as LocationInput[]
+  const sentences = JSON.parse(draft.sentences) as SentenceInput[]
+  const facts = JSON.parse(draft.expectedFacts) as string[]
+  const citationInputs = draft.citationInputs ?? sentences.map(sentence => sentence.citations.join(', '))
+  const terms = draft.termInputs ?? Object.entries(JSON.parse(draft.terms) as Record<string, string>)
+  const set = (field: 'locations' | 'sentences' | 'expectedFacts', value: unknown) => change({ ...draft, [field]: JSON.stringify(value) })
+  const setSentences = (values: SentenceInput[], inputs: string[]) => change({ ...draft, sentences: JSON.stringify(values), citationInputs: inputs })
+  const setTerms = (values: [string, string][]) => change({ ...draft, termInputs: values })
+  const removeLocation = (index: number) => {
+    const inputs = citationInputs.map(input => input.split(',').flatMap(part => {
+      const number = Number(part.trim())
+      // 빈 토큰·잘못된 번호는 보존해 불완전 입력이 삭제 과정에서 유효해지지 않게 한다.
+      if (!part.trim() || !Number.isInteger(number) || number < 1 || number > locations.length) return [part]
+      if (number === index + 1) return []
+      return [number > index + 1 ? String(number - 1) : part]
+    }).join(','))
+    // 위치와 두 인용 표현을 한 번에 바꿔 같은 문서 참조를 유지한다.
+    change({ ...draft, locations: JSON.stringify(locations.filter((_, position) => position !== index)),
+      sentences: JSON.stringify(sentences.map((sentence, position) => ({ ...sentence, citations: citationNumbers(inputs[position] ?? '') }))),
+      citationInputs: inputs })
+  }
+  return <fieldset disabled={busy} className="correction-fields">
+    <legend>수정 자료</legend>
+    <section aria-label="문서 위치 편집"><h4>문서 위치</h4>
+      {locations.map((location, index) => <fieldset key={index} aria-label={`문서 위치 ${index + 1}`}><legend>문서 위치 {index + 1}</legend>
+        {(['bucket', 'objectKey', 'revision', 'section', 'lineFrom', 'lineTo'] as const).map(key => {
+          const label = { bucket: '보관함', objectKey: '문서 경로', revision: '문서 판본', section: '절', lineFrom: '시작 줄', lineTo: '끝 줄' }[key]
+          const numeric = key === 'lineFrom' || key === 'lineTo'
+          return <label key={key}>{label}<input aria-label={`${label} ${index + 1}`} type={numeric ? 'number' : 'text'} value={location[key]} onChange={event => set('locations', locations.map((row, position) => position === index ? { ...row, [key]: numeric ? Number(event.target.value) : event.target.value } : row))} /></label>
+        })}
+        <button onClick={() => removeLocation(index)}>문서 위치 {index + 1} 삭제</button>
+      </fieldset>)}
+      <button onClick={() => set('locations', [...locations, newLocation()])}>문서 위치 추가</button>
     </section>
-    {detail && <section aria-label="검토 상세">
-      <Receipt value={detail.feedback} /><p>answerId: {detail.answerId}</p>
-      <p>질문</p><pre>{detail.question}</pre><p>답변</p><pre>{JSON.stringify(detail.answer, null, 2)}</pre>
-      <p>당시 근거</p><pre>{JSON.stringify(detail.evidence, null, 2)}</pre>
-      <p>지적</p><pre>{detail.feedback.comment}</pre>
-      <p>기존 조치</p><pre>{JSON.stringify(detail.reviews, null, 2)}</pre>
-      <p>재발 문항</p><pre>{JSON.stringify(detail.questionCase, null, 2)}</pre>
-      {detail.feedback.state !== 'OPEN' ? <p>OPEN 상태에서만 조치할 수 있습니다.</p> : <section aria-label="검토 조치">
-        <p>제출 version: {detail.feedback.version}</p>
-        <label>원인<select aria-label="원인" value={draft.cause} disabled={busy} onChange={event => {
-          const cause = event.target.value
-          if (cause === 'DOCUMENT' || cause === 'RETRIEVAL' || cause === 'ANSWER' || cause === 'REJECT') change({ ...draft, cause })
-        }}>{['DOCUMENT', 'RETRIEVAL', 'ANSWER', 'REJECT'].map(cause => <option key={cause}>{cause}</option>)}</select></label>
-        {noteOnly && <p>실시간 근거 전용: 조치 메모만 보냅니다.</p>}
-        {noteOnly || draft.cause === 'REJECT' || draft.cause === 'DOCUMENT'
-          ? <label>조치 메모<textarea aria-label="조치 메모" disabled={busy} value={draft.note} onChange={event => change({ ...draft, note: event.target.value })} /></label> : null}
-        {!noteOnly && draft.cause !== 'REJECT' && <>
-          <p>문서 위치는 JSON 배열입니다. 각 위치: bucket, objectKey, revision, section(문자열), lineFrom, lineTo(정수).</p>
-          <label>문서 위치<textarea aria-label="문서 위치" disabled={busy} value={draft.locations} onChange={event => change({ ...draft, locations: event.target.value })} /></label>
-          {draft.cause !== 'DOCUMENT' && <>
-            <p>정답 문장은 JSON 배열입니다. 각 문장: text, citations(같은 조치의 문서 위치 번호, 1부터 시작).</p>
-            <label>정답 문장<textarea aria-label="정답 문장" disabled={busy} value={draft.sentences} onChange={event => change({ ...draft, sentences: event.target.value })} /></label>
-            <label>핵심 사실<textarea aria-label="핵심 사실" disabled={busy} value={draft.expectedFacts} onChange={event => change({ ...draft, expectedFacts: event.target.value })} /></label>
-            <p>핵심 사실은 문자열 JSON 배열입니다.</p>
-          </>}
-          {draft.cause === 'RETRIEVAL' && <><label>용어<textarea aria-label="용어" disabled={busy} value={draft.terms} onChange={event => change({ ...draft, terms: event.target.value })} /></label><p>용어는 약어와 풀이의 JSON 객체입니다.</p></>}
-        </>}
-        <button disabled={busy} onClick={submit}>조치 제출</button>
-      </section>}
+    {draft.cause !== 'DOCUMENT' && <>
+      <section aria-label="정답 문장 편집"><h4>정답 문장</h4>
+        {sentences.map((sentence, index) => <fieldset key={index}><legend>정답 문장 {index + 1}</legend>
+          <label>문장<textarea aria-label={`정답 문장 ${index + 1}`} value={sentence.text} onChange={event => set('sentences', sentences.map((row, position) => position === index ? { ...row, text: event.target.value } : row))} /></label>
+          <label>인용할 문서 위치 번호 (쉼표로 구분)<input aria-label={`문장 인용 ${index + 1}`} value={citationInputs[index]} onChange={event => {
+            const value = event.target.value
+            setSentences(sentences.map((row, position) => position === index ? { ...row, citations: citationNumbers(value) } : row),
+              citationInputs.map((input, position) => position === index ? value : input))
+          }} /></label>
+          <button onClick={() => setSentences(sentences.filter((_, position) => position !== index), citationInputs.filter((_, position) => position !== index))}>정답 문장 {index + 1} 삭제</button>
+        </fieldset>)}
+        <button onClick={() => setSentences([...sentences, { text: '', citations: [] }], [...citationInputs, ''])}>정답 문장 추가</button>
+      </section>
+      <section aria-label="핵심 사실 편집"><h4>핵심 사실</h4>{facts.map((fact, index) => <div className="editor-row" key={index}>
+        <textarea aria-label={`핵심 사실 ${index + 1}`} value={fact} onChange={event => set('expectedFacts', facts.map((row, position) => position === index ? event.target.value : row))} />
+        <button onClick={() => set('expectedFacts', facts.filter((_, position) => position !== index))}>핵심 사실 {index + 1} 삭제</button>
+      </div>)}<button onClick={() => set('expectedFacts', [...facts, ''])}>핵심 사실 추가</button></section>
+      {draft.cause === 'RETRIEVAL' && <section aria-label="용어 편집"><h4>용어</h4>{terms.map(([term, definition], index) => <div key={index}>
+        <label>약어<input aria-label={`약어 ${index + 1}`} value={term} onChange={event => setTerms(terms.map<[string, string]>((row, position) => position === index ? [event.target.value, definition] : row))} /></label>
+        <label>풀이<input aria-label={`용어 풀이 ${index + 1}`} value={definition} onChange={event => setTerms(terms.map<[string, string]>((row, position) => position === index ? [term, event.target.value] : row))} /></label>
+        <button onClick={() => setTerms(terms.filter((_, position) => position !== index))}>용어 {index + 1} 삭제</button>
+      </div>)}<button onClick={() => setTerms([...terms, ['', '']])}>용어 추가</button></section>}
+    </>}
+  </fieldset>
+}
+
+export function Review({ state, change, submit }: {
+  state: ReviewState; change: (draft: ReviewDraft) => void; submit: () => void
+}) {
+  const { detail, draft, busy } = state
+  if (!detail) return <section aria-label="검토 내용"><h2>답변 검토</h2><p className="muted">목록에서 검토할 항목을 선택해 주세요.</p></section>
+  const noteOnly = liveEvidenceOnly(detail)
+  return <section aria-label="검토 상세">
+    <h2>답변 검토</h2><Receipt value={detail.feedback} />
+    <h3>질문</h3><p className="answer-text">{detail.question}</p>
+    <h3>답변</h3><ReadableValue value={detail.answer.text ?? detail.answer} />
+    <details><summary>당시 근거</summary><ReadableValue value={detail.evidence} /></details>
+    <h3>지적</h3><p className="answer-text">{detail.feedback.comment}</p>
+    <details><summary>기존 조치 · 재발 문항</summary><ReadableValue value={detail.reviews} /><ReadableValue value={detail.questionCase} /></details>
+    {detail.feedback.state !== 'OPEN' ? <p>검토 대기 상태에서만 조치할 수 있습니다.</p> : <section aria-label="검토 조치">
+      <h3>검토 조치</h3>
+      <label>원인<select aria-label="원인" value={draft.cause} disabled={busy} onChange={event => {
+        const cause = event.target.value
+        if (cause === 'DOCUMENT' || cause === 'RETRIEVAL' || cause === 'ANSWER' || cause === 'REJECT') change({ ...draft, cause })
+      }}>{['DOCUMENT', 'RETRIEVAL', 'ANSWER', 'REJECT'].map(cause => <option key={cause} value={cause}>{statusLabel(cause)}</option>)}</select></label>
+      {noteOnly && <p>실시간 근거 전용: 조치 메모만 보냅니다.</p>}
+      {(noteOnly || draft.cause === 'REJECT' || draft.cause === 'DOCUMENT') && <label>조치 메모<textarea aria-label="조치 메모" disabled={busy} value={draft.note} onChange={event => change({ ...draft, note: event.target.value })} /></label>}
+      {!noteOnly && draft.cause !== 'REJECT' && <CorrectionFields draft={draft} busy={busy} change={change} />}
+      <button className="primary-button" disabled={busy} onClick={submit}>조치 제출</button>
     </section>}
   </section>
 }

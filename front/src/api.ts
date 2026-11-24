@@ -153,8 +153,8 @@ export class AiApi {
     return this.consume(path, options, readBody)
   }
 
-  async session(): Promise<Session> {
-    const value = object(await this.request('/session'))
+  async session(signal?: AbortSignal): Promise<Session> {
+    const value = object(await this.request('/session', { signal }))
     const csrf = value.csrf === null ? null : object(value.csrf)
     if (typeof value.canReview !== 'boolean') throw new Error('응답 형식을 확인할 수 없습니다.')
     const session = {
