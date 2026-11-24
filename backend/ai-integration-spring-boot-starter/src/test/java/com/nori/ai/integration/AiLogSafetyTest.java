@@ -123,7 +123,7 @@ class AiLogSafetyTest {
                             "gatewayRequestId=0f5f4155-cd17-4921-800d-d1b948dbb4a0", "stage=identity httpStatus=503 code=AUTH_UNAVAILABLE",
                             "stage=identity httpStatus=500 code=AUTH_RESULT_INVALID", "stage=sign httpStatus=500 code=SIGNING_FAILED",
                             "stage=relay httpStatus=409 code=REVIEW_CONFLICT", "stage=connect httpStatus=202 code=GATEWAY_UNAVAILABLE",
-                            "integrationVersion=1.0.1", "direction=browser-to-gateway");
+                            "integrationVersion=1.0.2", "direction=browser-to-gateway");
                     for (String secret : List.of("SECRET_MARKER", "fixture_subject", "fixture-service-credential-never-log", assertion,
                             claims.get("dlg").asString(), claims.get("pdg").asString(), Files.readString(keys.properties().delegationKeyFile()),
                             PhaseTwoFixtures.JSON.readTree(Files.readString(keys.properties().actorPrivateJwkFile())).get("d").asString())) {

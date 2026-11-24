@@ -250,10 +250,12 @@ test('격리 브라우저 공유 목록·불투명 커서·null 제목·다른 �
     for (const page of [a, b]) {
       await page.getByRole('button', { name: '대화 목록', exact: true }).click()
       await expect(page.getByRole('region', { name: '대화 목록', exact: true }).getByRole('button', { name: '새 대화', exact: true })).toBeVisible()
-      await expect(page.getByRole('button', { name: '다음 쪽', exact: true })).toBeVisible()
+      await expect(page.getByRole('region', { name: '대화 목록', exact: true }).locator('.conversation-row')).toHaveCount(20)
     }
-    await a.getByRole('button', { name: '다음 쪽', exact: true }).click()
+    await a.getByRole('complementary', { name: '대화 사이드바', exact: true }).hover()
+    await a.mouse.wheel(0, 3000)
     await expect(a.getByRole('button', { name: '보관 대화 0', exact: true })).toBeVisible()
+    await expect(a.getByRole('region', { name: '대화 목록', exact: true }).locator('.conversation-row')).toHaveCount(21)
     await expect(a.getByRole('button', { name: '다음 쪽', exact: true })).toHaveCount(0)
     const cursorRequest = backend.apiRequests.find(row => row.path.includes('after='))
     expect(backend.issuedCursors).toContain(new URL(cursorRequest?.path ?? '', backend.origin).searchParams.get('after'))

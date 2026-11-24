@@ -17,7 +17,7 @@ interface Message { id: string; role: string; content: string | Result }
 interface Job { accepted: Accepted; active: boolean; lastId: string; interrupted: boolean }
 interface State {
   tab: 'conversation' | 'review'; sidebar: boolean; validating: boolean; query: string; conversationId: string | null
-  items: ConversationEntry[]; nextAfter: string | null; messages: Message[]
+  items: ConversationEntry[]; nextAfter: string | null; listLoading: boolean; listFailed: boolean; messages: Message[]
   job: Job | null; retry: LogicalQuestion | null; progress: string[]
   notice: string; retryAfter: string | null; evidence: string; exported: string
   busy: boolean; ready: boolean; cancelResult: string
@@ -25,7 +25,7 @@ interface State {
 }
 
 const initialState = (): State => ({
-  tab: 'conversation', sidebar: false, validating: false, query: '', conversationId: null, items: [], nextAfter: null, messages: [],
+  tab: 'conversation', sidebar: false, validating: false, query: '', conversationId: null, items: [], nextAfter: null, listLoading: false, listFailed: false, messages: [],
   job: null, retry: null, progress: [], notice: '', retryAfter: null, evidence: '', exported: '',
   busy: false, ready: false, cancelResult: '',
   canReview: false, review: emptyReview(), feedback: {},
@@ -78,6 +78,8 @@ export class ConversationModel {
   private validationController: AbortController | null = null
   private focusRevision = 0
   private conversationRevision = 0
+  private listRevision = 0
+  private readonly listCursors = new Set<string>()
 
   constructor(private readonly api: AiApi) {}
   snapshot = (): State => this.state
@@ -97,6 +99,7 @@ export class ConversationModel {
     this.generation++
     this.sourceRevision++; this.exportRevision++
     this.reviewRevision++
+    this.listRevision++; this.listCursors.clear()
     this.stream?.abort(); this.stream = null
     this.api.cancelAll(); this.sessionValue = null
     this.state = initialState()
@@ -145,14 +148,33 @@ export class ConversationModel {
     return !changed
   }
   private async loadList(after?: string): Promise<void> {
-    const query = new URLSearchParams({ limit: '20' })
-    if (after !== undefined) query.set('after', after)
-    const list = object(await this.request(`/v1/conversations?${query}`))
-    const items = array(list.items).map(entry => {
-      const row = object(entry)
-      return { id: text(row.id), title: row.title === null ? null : text(row.title) }
-    })
-    this.update({ items, nextAfter: list.nextAfter === null ? null : text(list.nextAfter) })
+    if (after !== undefined && (this.state.listLoading || this.listCursors.has(after))) return
+    if (after === undefined) { this.listRevision++; this.listCursors.clear() }
+    const revision = this.listRevision
+    const generation = this.generation
+    const current = () => revision === this.listRevision && generation === this.generation && !this.disposed
+    this.update({ listLoading: true, listFailed: false, ...(after === undefined ? { nextAfter: null } : {}) })
+    try {
+      const query = new URLSearchParams({ limit: '20' })
+      if (after !== undefined) query.set('after', after)
+      const list = object(await this.request(`/v1/conversations?${query}`))
+      if (!current()) return
+      const rows = array(list.items).map(entry => {
+        const row = object(entry)
+        return { id: text(row.id), title: row.title === null ? null : text(row.title) }
+      })
+      const next = list.nextAfter === null ? null : text(list.nextAfter)
+      const items = after === undefined ? [] : [...this.state.items]
+      const ids = new Set(items.map(item => item.id))
+      for (const row of rows) if (!ids.has(row.id)) { ids.add(row.id); items.push(row) }
+      if (after !== undefined) this.listCursors.add(after)
+      // 서버 커서는 해석하지 않고 전달하며 이미 소비한 커서의 순환만 종료한다.
+      this.update({ items, nextAfter: next === null || this.listCursors.has(next) ? null : next })
+    } catch (error) {
+      if (!current()) return
+      this.update({ listFailed: true })
+      throw error
+    } finally { if (current()) this.update({ listLoading: false }) }
   }
   focus = (reopen = false): Promise<void> => {
     if (this.validation && !reopen) return this.validation
@@ -307,7 +329,12 @@ export class ConversationModel {
     await this.loadReview(id)
   })
   next = (): Promise<void> => this.task(async () => {
-    if (this.state.nextAfter !== null) await this.loadList(this.state.nextAfter)
+    if (!this.state.listFailed && this.state.nextAfter !== null) await this.loadList(this.state.nextAfter)
+  })
+  retryList = (): Promise<void> => this.task(async () => {
+    if (!this.state.listFailed || this.state.listLoading) return
+    this.update({ notice: '', retryAfter: null })
+    await this.loadList(this.state.nextAfter ?? undefined)
   })
   reload = (): Promise<void> => this.task(async () => {
     await this.loadList()
@@ -545,6 +572,20 @@ export function Conversation({ model, close }: { model: ConversationModel; close
   useEffect(() => {
     if (follow.current && main.current) main.current.scrollTop = main.current.scrollHeight
   }, [state.messages, state.progress])
+  useEffect(() => {
+    const root = sidebar.current
+    if (!showingSidebar || reviewMode || !root) return
+    const load = () => {
+      // 최소화되거나 감춰진 drawer에서 짧은 목록을 끝까지 미리 읽지 않는다.
+      if (root.clientHeight > 0 && root.getClientRects().length > 0
+        && root.scrollHeight - root.scrollTop - root.clientHeight < 80) void model.next()
+    }
+    root.addEventListener('scroll', load)
+    const observer = new ResizeObserver(load)
+    observer.observe(root)
+    load()
+    return () => { root.removeEventListener('scroll', load); observer.disconnect() }
+  }, [model, showingSidebar, reviewMode, state.items, state.nextAfter, state.listLoading, state.listFailed])
   const closeSidebar = () => { returnFocus.current = true; model.setSidebar(false) }
   const locked = state.busy || Boolean(state.job?.active) || state.retry !== null
   return <section className={`panel${showingSidebar ? ' expanded' : ''}`} aria-label="AI 대화">
@@ -560,13 +601,14 @@ export function Conversation({ model, close }: { model: ConversationModel; close
       }}>
         <div className="aside-heading"><strong>{reviewMode ? '검토 목록' : '대화 목록'}</strong><button className="icon-button" aria-label="목록 닫기" title="목록 닫기" onClick={closeSidebar}><Icon name="close" /></button></div>
         {reviewMode ? <ReviewList state={state.review} list={status => void model.reviews(status)} next={() => void model.nextReviews()} open={id => { void model.openReview(id); if (narrow) closeSidebar() }} />
-          : <section aria-label="대화 목록">
-            {state.items.length === 0 && <p className="muted">대화가 없습니다.</p>}
+          : <section aria-label="대화 목록" aria-busy={state.listLoading}>
+            {state.items.length === 0 && !state.listLoading && !state.listFailed && <p className="muted">대화가 없습니다.</p>}
             {state.items.map(item => <article className="conversation-row" key={item.id}>
               <button aria-current={state.conversationId === item.id ? 'true' : undefined} disabled={locked} onClick={() => { void model.open(item.id); if (narrow) closeSidebar() }}>{item.title ?? '새 대화'}</button>
               <button className="delete-button" aria-label={`${item.title ?? '새 대화'} 삭제`} disabled={state.busy} onClick={() => void model.remove(item.id)}>삭제</button>
             </article>)}
-            {state.nextAfter !== null && <button onClick={() => void model.next()}>다음 쪽</button>}
+            {state.listLoading && <p role="status" className="muted">대화 목록을 불러오고 있습니다.</p>}
+            {state.listFailed && <button onClick={() => void model.retryList()}>목록 다시 시도</button>}
             <button className="reload-button" onClick={() => void model.reload()}>목록·상세 새로고침</button>
           </section>}
       </aside>

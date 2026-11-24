@@ -142,8 +142,8 @@ abstract class ConsumerContract {
                 assertThat(app.getBeansWithAnnotation(Controller.class).values()).noneMatch(bean -> bean.getClass().getPackageName().equals("example"));
                 assertThat(app.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase(java.util.Locale.ROOT).matches(".*(delegationstore|permissionhook|proxycontroller).*"));
                 String location = AiRequestIdentityResolver.class.getProtectionDomain().getCodeSource().getLocation().toString();
-                assertThat(location.replace('\\', '/')).contains("/.m2/repository/com/nori/ai/ai-integration-spring-boot-starter/1.0.1/")
-                        .endsWith("ai-integration-spring-boot-starter-1.0.1.jar");
+                assertThat(location.replace('\\', '/')).contains("/.m2/repository/com/nori/ai/ai-integration-spring-boot-starter/1.0.2/")
+                        .endsWith("ai-integration-spring-boot-starter-1.0.2.jar");
                 var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
                 try (var browser = HttpClient.newBuilder().cookieHandler(cookies).followRedirects(HttpClient.Redirect.NEVER).build()) {
                     assertThat(send(browser, base.get(), "GET", "/api/ai/assets/widget.js", "", List.of()).statusCode()).isEqualTo(200);
@@ -155,7 +155,7 @@ abstract class ConsumerContract {
                     var info = JSON.readTree(session.body());
                     assertThat(info.get("subject").asString()).isEqualTo("reader_1");
                     assertThat(info.get("canReview").asBoolean()).isFalse();
-                    assertThat(info.get("integrationVersion").asString()).isEqualTo("1.0.1");
+                    assertThat(info.get("integrationVersion").asString()).isEqualTo("1.0.2");
                     var headers = new java.util.ArrayList<>(auth);
                     if (cookie()) {
                         assertThat(send(browser, base.get(), "POST", "/api/ai/v1/query", "{}", auth).statusCode()).isEqualTo(403);
