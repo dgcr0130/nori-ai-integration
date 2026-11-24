@@ -1,13 +1,13 @@
-# Nori AI 공통 연동 1.0.2
+# Nori AI 공통 연동 1.0.3
 
 연결 작업은 아래 네 가지입니다. Spring MVC·Spring Security를 사용하는 **Spring Boot 4.0·Java 21** 앱이 대상입니다. MES·HRM은 Boot 4.0으로 올린 뒤 연결해야 합니다. 두 중립 예제는 헤더·쿠키 전달 계약을 확인하며 MES·HRM의 실제 인증·적용을 증명하지 않습니다.
 
 ## 1. backend: 의존·설정·사용자 해석·업무 처리기
 
-발행 좌표는 `com.nori.ai:ai-integration-spring-boot-starter:1.0.2`입니다.
+발행 좌표는 `com.nori.ai:ai-integration-spring-boot-starter:1.0.3`입니다.
 
 ```kotlin
-implementation("com.nori.ai:ai-integration-spring-boot-starter:1.0.2")
+implementation("com.nori.ai:ai-integration-spring-boot-starter:1.0.3")
 ```
 
 GitLab Maven 프로젝트 번호는 **51**입니다. 기존 Nori 공통 settings 규칙을 쓰는 시스템은 `gradle.properties`의 `gitlabPackageProjectIds` 목록에 51을 추가합니다. settings나 leaf 모듈에 저장소를 추가하지 않습니다. 저장소는 `GITLAB_BASE_URL`(TC CI: `https://gitlab.noricloud.org`) 아래 `/api/v4/projects/51/packages/maven`입니다. CI는 `CI_JOB_TOKEN`을 `Job-Token` 헤더로 사용합니다. 로컬은 CI_JOB_TOKEN이 없을 때 `gitlabToken` 또는 `GITLAB_TOKEN`을 `Private-Token` 헤더로 전달하고 값을 파일에 저장하지 않습니다. 로컬 TC 소비 검증은 `-PuseLocalMaven`입니다. 프로젝트 51의 패키지 발행과 소비 CI job token 수신 허용 설정은 설치 담당자의 별도 작업입니다.
@@ -121,7 +121,7 @@ npm run test:e2e -- tests/e2e/widget-consumers.spec.ts
 
 브라우저 시험은 두 bootJar를 직접 띄우고 임시 포트·가짜 자격·로컬 Gateway 대역·header 앞단을 소유합니다. COOKIE 호스트는 React 19.2.8·초록 전역 CSS, HEADER 호스트는 React/React DOM 18.3.1·빨강 전역 CSS이며 ref 연결과 위젯 Shadow DOM 격리를 확인합니다. 끝나면 브라우저·앱·대역·임시 자격을 정리합니다. 수동 실행 시 `EXAMPLE_GATEWAY_URL`(로컬 대역), 네 `EXAMPLE_*_FILE`과 `EXAMPLE_LOGIN_PASSWORD` 또는 `EXAMPLE_LOGIN_TOKEN`을 외부 환경으로 공급합니다. cookie 앱은 기본 18081, header backend는 18082입니다. header 앞단은 `EXAMPLE_BACKEND_URL=http://127.0.0.1:18082`, `EXAMPLE_FRONT_PORT=18083`, 같은 `EXAMPLE_LOGIN_TOKEN`을 공급하고 `node examples/header-app/proxy.mjs`로 실행합니다. 자격 값을 소스·명령 인자에 넣지 않습니다.
 
-네 파일 환경변수는 `EXAMPLE_SERVICE_TOKEN_FILE`, `EXAMPLE_ACTOR_JWK_FILE`, `EXAMPLE_GATEWAY_TOKEN_FILE`, `EXAMPLE_DELEGATION_KEY_FILE`입니다. 환경 입력을 준비한 뒤 저장소 루트에서 `java -jar examples/cookie-app/build/libs/cookie-app-1.0.2.jar` 또는 `java -jar examples/header-app/build/libs/header-app-1.0.2.jar`를 실행합니다. cookie 화면의 "쿠키 로그인"은 사용자 `reader_1`과 외부 공급 비밀번호를 사용하며, header 화면의 "예제 로그인 토큰"에는 외부 공급 테스트 토큰을 입력합니다. 수동 실행한 앱·앞단·대역도 확인 후 종료합니다.
+네 파일 환경변수는 `EXAMPLE_SERVICE_TOKEN_FILE`, `EXAMPLE_ACTOR_JWK_FILE`, `EXAMPLE_GATEWAY_TOKEN_FILE`, `EXAMPLE_DELEGATION_KEY_FILE`입니다. 환경 입력을 준비한 뒤 저장소 루트에서 `java -jar examples/cookie-app/build/libs/cookie-app-1.0.3.jar` 또는 `java -jar examples/header-app/build/libs/header-app-1.0.3.jar`를 실행합니다. cookie 화면의 "쿠키 로그인"은 사용자 `reader_1`과 외부 공급 비밀번호를 사용하며, header 화면의 "예제 로그인 토큰"에는 외부 공급 테스트 토큰을 입력합니다. 수동 실행한 앱·앞단·대역도 확인 후 종료합니다.
 
 ## 3. Gateway: 시스템 항목과 자격 배치
 

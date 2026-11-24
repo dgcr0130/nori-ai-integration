@@ -32,7 +32,7 @@ test('두 실제 Boot 소비 앱에서 같은 위젯·서명·내부 도구·Rea
       await expect(page.getByRole('heading', { name: app.mode === 'cookie' ? '쿠키 호스트 React 19.2.8' : '헤더 호스트 React 18.3.1' })).toBeVisible()
       const widget = page.locator('nori-ai-widget')
       await expect(widget).toHaveCount(1)
-      await expect.poll(() => widget.evaluate(element => Reflect.get(element, 'integrationVersion'))).toBe('1.0.2')
+      await expect.poll(() => widget.evaluate(element => Reflect.get(element, 'integrationVersion'))).toBe('1.0.3')
       let supplierCalls = 0
       const api: { path: string; authorization: boolean; csrf: boolean }[] = []
       await page.exposeFunction('countSupplier', () => { supplierCalls++ })
