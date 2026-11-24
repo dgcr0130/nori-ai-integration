@@ -167,6 +167,19 @@ test('IANA 조회 실패 때 현재 오프셋을 쓰고 새 질문은 query 경�
   } finally { await context.close() }
 })
 
+test('근거 없는 답변은 답변 영역에 근거 없음을 한 번만 표시한다', async ({ page, context, backend }) => {
+  await login(context, backend)
+  await openWidget(page, backend)
+  const jobId = await send(page, backend, '첫 질문')
+  backend.noEvidence = true
+  backend.event(jobId, 'job.completed', '2')
+  const answer = page.getByRole('region', { name: '답변', exact: true })
+  await expect(answer).toBeVisible()
+  const noEvidence = answer.getByText('근거 없음', { exact: true })
+  await expect(noEvidence).toHaveCount(1)
+  await expect(noEvidence).toBeVisible()
+})
+
 for (const mode of ['drop', 'unavailable', 'timeout'] as const) {
   test(`응답 불명 ${mode}: 사용자만 최초 경로·본문·키로 다시 보내고 기존 Job을 받는다`, async ({ page, context, backend }) => {
     await login(context, backend)

@@ -521,7 +521,6 @@ function AnswerView({ result, model }: { result: Result; model: ConversationMode
   return <section aria-label="답변">
     <p className="muted">{statusLabel(result.jobStatus)}</p>
     {result.answer && <>
-      {result.answer.kind === 'NO_EVIDENCE' && <p>근거 없음</p>}
       <p className="answer-text">{result.answer.text}</p>
       {result.answer.citations.length > 0 && <details className="sources"><summary>참고 자료 {result.answer.citations.length}개</summary>
         {result.answer.citations.map(citation => <div key={citation.number}>
