@@ -4,6 +4,7 @@ const labels: Record<string, string> = {
   location: '위치', note: '조치 메모', cause: '원인', action: '조치', createdAt: '등록일', updatedAt: '변경일',
   sentences: '정답 문장', citations: '인용', number: '번호', expectedFacts: '핵심 사실', locations: '문서 위치',
   correctAnswer: '정답', terms: '용어', question: '질문', answer: '답변', title: '제목', content: '내용',
+  description: '설명', exampleQuestions: '예시 질문',
 }
 export const statusLabel = (value: string): string => ({
   OPEN: '검토 대기', RESOLVED: '처리 완료', REJECTED: '반려', SUCCEEDED: '답변이 완료되었습니다.',

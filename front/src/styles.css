@@ -44,6 +44,10 @@ h4 { font-size: 13px; margin: 12px 0; }
 .message-user p { margin: 0; }
 .answer-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .sources, details { margin: 10px 0; }
+.source-list { list-style: none; margin: 6px 0; padding: 0; }
+.source-list li { margin: 2px 0; }
+.source-list button { border: 0; padding: 4px 6px; text-align: left; font-size: 13px; }
+.source-list p { border-left: 2px solid var(--line); padding-left: 10px; margin: 4px 0 10px 6px; font-size: 13px; }
 summary { cursor: pointer; color: var(--muted); font-size: 12px; border-radius: 4px; }
 dl { margin: 6px 0; }
 dl > div { margin: 8px 0; }

@@ -234,6 +234,6 @@ test('취소 접수와 실제 작업 종결 상태를 구분한다', async ({ pa
   expect(backend.jobs.get(id)?.active).toBe(true)
   await expect(page.getByRole('button', { name: '취소', exact: true })).toBeVisible()
   backend.event(id, 'job.cancelled', '2')
-  await expect(page.getByRole('log')).toContainText('질문이 취소되었습니다.')
+  await expect(page.getByRole('region', { name: '답변', exact: true })).toContainText('질문이 취소되었습니다.')
   await expect(page.getByRole('button', { name: '취소', exact: true })).toHaveCount(0)
 })

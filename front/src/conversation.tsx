@@ -9,24 +9,25 @@ import { ReadableValue, statusLabel } from './readable'
 interface Accepted { jobId: string; conversationId: string; messageId: string; queuePosition: number }
 interface LogicalQuestion { path: string; body: string; key: string; query: string }
 interface ConversationEntry { id: string; title: string | null }
-interface Citation { number: number; evidenceId: string; sourceType: string; location: unknown }
+interface Citation { number: number; evidenceId: string; sourceType: string; title: string | null }
 interface Answer { kind: string; text: string; citations: Citation[] }
-interface Block { id: string; value: Record<string, unknown> }
-interface Result { jobId: string; jobStatus: string; answer: Answer | null; blocks: Block[]; denied: boolean }
+interface Guide { id: string; rows: unknown[] }
+interface Result { jobId: string; jobStatus: string; answer: Answer | null; guides: Guide[]; denied: boolean }
 interface Message { id: string; role: string; content: string | Result }
 interface Job { accepted: Accepted; active: boolean; lastId: string; interrupted: boolean }
 interface State {
   tab: 'conversation' | 'review'; sidebar: boolean; validating: boolean; query: string; conversationId: string | null
   items: ConversationEntry[]; nextAfter: string | null; listLoading: boolean; listFailed: boolean; messages: Message[]
   job: Job | null; retry: LogicalQuestion | null; progress: string[]
-  notice: string; retryAfter: string | null; evidence: string; exported: string
+  // 열린 근거만 키를 갖는다. null은 불러오는 중이다. 키는 sourceKey(jobId, evidenceId)이다.
+  notice: string; retryAfter: string | null; sources: Record<string, string | null>
   busy: boolean; ready: boolean; blocked: boolean; cancelResult: string
   canReview: boolean; review: ReviewState; feedback: Record<string, FeedbackDraft>
 }
 
 const initialState = (): State => ({
   tab: 'conversation', sidebar: false, validating: false, query: '', conversationId: null, items: [], nextAfter: null, listLoading: false, listFailed: false, messages: [],
-  job: null, retry: null, progress: [], notice: '', retryAfter: null, evidence: '', exported: '',
+  job: null, retry: null, progress: [], notice: '', retryAfter: null, sources: {},
   busy: false, ready: false, blocked: true, cancelResult: '',
   canReview: false, review: emptyReview(), feedback: {},
 })
@@ -48,13 +49,15 @@ function resultView(value: unknown): Result {
       citations: array(answer.citations).map(entry => {
         const citation = object(entry)
         if (typeof citation.number !== 'number') throw new Error('응답 형식을 확인할 수 없습니다.')
-        return { number: citation.number, evidenceId: text(citation.evidenceId), sourceType: text(citation.sourceType), location: citation.location }
+        // title이 생기기 전에 저장된 답변은 출처 종류로 표시한다.
+        const title = typeof citation.title === 'string' && citation.title.trim() ? citation.title : null
+        return { number: citation.number, evidenceId: text(citation.evidenceId), sourceType: text(citation.sourceType), title }
       }),
     },
-    blocks: payload?.blocks === undefined ? [] : array(payload.blocks).map(entry => {
-      const block = object(entry)
-      return { id: text(block.id), value: block }
-    }),
+    // 업무 조회 표(dataRef 있음)는 참고 자료와 같은 원문이라 보이지 않고, 도움말 기능 목록 표(dataRef 없음)만 남긴다.
+    guides: payload?.blocks === undefined ? [] : array(payload.blocks).map(entry => object(entry))
+      .filter(block => block.type === 'table' && (block.dataRef === undefined || block.dataRef === null))
+      .map(block => ({ id: text(block.id), rows: array(object(block.content).rows) })),
   }
 }
 
@@ -72,7 +75,6 @@ export class ConversationModel {
   private disposed = false
   private stream: AbortController | null = null
   private sourceRevision = 0
-  private exportRevision = 0
   private reviewRevision = 0
   private validation: Promise<void> | null = null
   private validationController: AbortController | null = null
@@ -102,7 +104,7 @@ export class ConversationModel {
   private clear(): void {
     this.generation++
     this.sessionRevision++
-    this.sourceRevision++; this.exportRevision++
+    this.sourceRevision++
     this.reviewRevision++
     this.listRevision++; this.listCursors.clear()
     this.listVisited = false
@@ -116,8 +118,8 @@ export class ConversationModel {
     this.clear(); this.api.dispose(); this.disposed = true; this.listeners.clear()
   }
   private clearSources(): void {
-    this.sourceRevision++; this.exportRevision++
-    this.update({ evidence: '', exported: '' })
+    this.sourceRevision++
+    this.update({ sources: {} })
   }
   private failure(error: unknown): void {
     if (this.disposed || (error instanceof DOMException && error.name === 'AbortError')) return
@@ -144,7 +146,7 @@ export class ConversationModel {
   private quarantine(): void {
     // 확인 불가는 로그아웃과 다르다. 신원 결속 메모리는 보존하되 비동기 응답과 보호 화면을 격리한다.
     this.generation++; this.sessionRevision++
-    this.reviewRevision++; this.listRevision++; this.sourceRevision++; this.exportRevision++
+    this.reviewRevision++; this.listRevision++; this.sourceRevision++
     this.api.cancelAll(); this.stream?.abort(); this.stream = null
     this.update({ ready: false, busy: false, listLoading: false,
       ...(this.admission ? { retry: this.admission } : {}),
@@ -434,7 +436,7 @@ export class ConversationModel {
           this.conversationRevision++
           this.stream?.abort(); this.stream = null
           this.clearSources()
-          this.update({ conversationId: null, query: '', messages: [], job: null, progress: [], retry: null, feedback: {}, cancelResult: '', evidence: '', exported: '' })
+          this.update({ conversationId: null, query: '', messages: [], job: null, progress: [], retry: null, feedback: {}, cancelResult: '' })
         }
       }
       throw error
@@ -449,7 +451,7 @@ export class ConversationModel {
     if (this.state.job?.active || this.state.retry || !await this.refreshSession()) return
     const conversation = object(await this.request('/v1/conversations', { method: 'POST' }))
     this.clearSources()
-    this.update({ conversationId: text(conversation.id), messages: [], query: '', job: null, progress: [], evidence: '', exported: '', tab: 'conversation', cancelResult: '' })
+    this.update({ conversationId: text(conversation.id), messages: [], query: '', job: null, progress: [], tab: 'conversation', cancelResult: '' })
     await this.loadList()
   })
   private async command(action: () => Promise<void>): Promise<void> {
@@ -487,7 +489,7 @@ export class ConversationModel {
     this.clearSources()
     this.update({ retry: null, query: '', conversationId: accepted.conversationId, notice: '',
       messages: [...this.state.messages, { id: accepted.messageId, role: 'user', content: question.query }],
-      job: { accepted, active: true, interrupted: false, lastId: '' }, progress: [], evidence: '', exported: '', cancelResult: '' })
+      job: { accepted, active: true, interrupted: false, lastId: '' }, progress: [], cancelResult: '' })
     // 목록 장애가 접수된 Job의 이벤트 연결을 막지 않게 독립 수명으로 시작한다.
     void this.connect()
     await this.loadList()
@@ -569,49 +571,70 @@ export class ConversationModel {
     if (this.state.conversationId === id) {
       this.stream?.abort(); this.stream = null
       this.clearSources()
-      this.update({ conversationId: null, messages: [], job: null, progress: [], retry: null, evidence: '', exported: '', notice: '', cancelResult: '' })
+      this.update({ conversationId: null, messages: [], job: null, progress: [], retry: null, notice: '', cancelResult: '' })
     }
     await this.loadList()
   })
-  evidence = (jobId: string, evidenceId: string): Promise<void> => this.userTask(async () => {
-    const revision = ++this.sourceRevision
-    this.update({ evidence: '' })
-    const source = object(await this.request(`/v1/analyses/${encodeURIComponent(jobId)}/evidence/${encodeURIComponent(evidenceId)}/source`))
-    if (source.resultAccess === 'DENIED') { this.clearSources(); this.update({ notice: '근거를 읽을 권한이 없습니다.' }); return }
-    if (revision !== this.sourceRevision) return
-    this.update({ evidence: text(source.maskedText) })
+  /** 참고 자료 항목을 그 자리에서 펼치거나 접는다. 여러 항목을 함께 열 수 있다. */
+  toggleEvidence = (jobId: string, evidenceId: string): Promise<void> => this.userTask(async () => {
+    const key = sourceKey(jobId, evidenceId)
+    if (key in this.state.sources) { this.update({ sources: without(this.state.sources, key) }); return }
+    const revision = this.sourceRevision
+    this.update({ sources: { ...this.state.sources, [key]: null } })
+    try {
+      const source = object(await this.request(`/v1/analyses/${encodeURIComponent(jobId)}/evidence/${encodeURIComponent(evidenceId)}/source`))
+      if (source.resultAccess === 'DENIED') { this.clearSources(); this.update({ notice: '근거를 읽을 권한이 없습니다.' }); return }
+      // 그 사이 비우거나 접은 항목은 늦게 도착한 본문으로 되살리지 않는다.
+      if (revision === this.sourceRevision && key in this.state.sources) this.update({ sources: { ...this.state.sources, [key]: text(source.maskedText) } })
+    } catch (error) {
+      if (revision === this.sourceRevision) this.update({ sources: without(this.state.sources, key) })
+      throw error
+    }
   })
-  export = (jobId: string, blockId: string): Promise<void> => this.userTask(async () => {
-    const revision = ++this.exportRevision
-    this.update({ exported: '' })
-    const block = object(await this.request(`/v1/analyses/${encodeURIComponent(jobId)}/blocks/${encodeURIComponent(blockId)}/export`))
-    if (block.resultAccess === 'DENIED') { this.clearSources(); this.update({ notice: '근거를 읽을 권한이 없습니다.' }); return }
-    if (revision !== this.exportRevision) return
-    this.update({ exported: JSON.stringify(block, null, 2) })
-  })
+}
+
+function sourceKey(jobId: string, evidenceId: string): string { return `${jobId}/${evidenceId}` }
+
+function without(sources: Record<string, string | null>, key: string): Record<string, string | null> {
+  const rest = { ...sources }
+  delete rest[key]
+  return rest
 }
 
 function AnswerView({ result, model }: { result: Result; model: ConversationModel }) {
   const blocked = model.snapshot().validating || model.snapshot().blocked || !model.snapshot().ready
   if (result.denied) return <p>결과를 읽을 권한이 없습니다.</p>
+  const sources = model.snapshot().sources
   return <section aria-label="답변">
-    <p className="muted">{statusLabel(result.jobStatus)}</p>
+    {result.jobStatus !== 'SUCCEEDED' && <p className="muted">{statusLabel(result.jobStatus)}</p>}
+    {result.answer && <p className="answer-text">{result.answer.text}</p>}
+    {result.guides.map(guide => <details key={guide.id} className="sources"><summary>기능 목록</summary>
+      <ReadableValue value={guide.rows} />
+    </details>)}
     {result.answer && <>
-      <p className="answer-text">{result.answer.text}</p>
       {result.answer.citations.length > 0 && <details className="sources"><summary>참고 자료 {result.answer.citations.length}개</summary>
-        {result.answer.citations.map(citation => <div key={citation.number}>
-          <button disabled={blocked} onClick={() => void model.evidence(result.jobId, citation.evidenceId)}>근거 {citation.number}</button>
-          <span>{statusLabel(citation.sourceType)}</span><ReadableValue value={citation.location} />
-        </div>)}
+        <ol className="source-list">{result.answer.citations.map(citation => {
+          const key = sourceKey(result.jobId, citation.evidenceId)
+          const body = sources[key]
+          return <li key={citation.number}>
+            <button aria-expanded={key in sources} disabled={blocked} onClick={() => void model.toggleEvidence(result.jobId, citation.evidenceId)}>
+              [{citation.number}] {citation.title ?? statusLabel(citation.sourceType)}
+            </button>
+            {key in sources && (body === null ? <p className="muted" role="status">근거를 불러오고 있습니다.</p>
+              : <p className="answer-text" aria-label={`근거 ${citation.number} 본문`}>{body}</p>)}
+          </li>
+        })}</ol>
       </details>}
       <Feedback blocked={blocked} draft={model.snapshot().feedback[result.jobId] ?? emptyFeedback()}
         change={comment => model.changeFeedback(result.jobId, comment)} submit={rating => void model.feedback(result.jobId, rating)} />
     </>}
-    {result.blocks.length > 0 && <details><summary>추가 자료 · 내보내기</summary>{result.blocks.map((block, index) => <div key={block.id}>
-      <ReadableValue value={block.value} />
-      <button disabled={blocked} onClick={() => void model.export(result.jobId, block.id)}>자료 {index + 1} 내보내기</button>
-    </div>)}</details>}
   </section>
+}
+
+/** 진행 영역은 답변을 기다리거나 연결이 끊겼거나, 종결됐지만 결과를 아직 받지 못한 동안만 보인다. */
+function awaitingResult(job: Job, messages: Message[]): boolean {
+  return job.active || job.interrupted
+    || !messages.some(message => typeof message.content !== 'string' && message.content.jobId === job.accepted.jobId)
 }
 
 function progressLabel(progress: string[], interrupted: boolean): string {
@@ -711,16 +734,12 @@ export function Conversation({ model, close }: { model: ConversationModel; close
               {typeof message.content === 'string' ? <p className="answer-text">{message.content}</p> : <AnswerView result={message.content} model={model} />}
             </article>)}
           </section>
-          {state.job && <section className="job-status" aria-label="질문 진행">
+          {state.job && awaitingResult(state.job, state.messages) && <section className="job-status" aria-label="질문 진행">
             <div role="log" aria-live="polite" aria-atomic="true">{progressLabel(state.progress, state.job.interrupted)}</div>
             {state.job.interrupted && state.job.active && <button disabled={serverBlocked} onClick={() => void model.reconnect()}>다시 연결</button>}
             <details><summary>진행 확인</summary><button disabled={serverBlocked} onClick={() => void model.result()}>결과 다시 조회</button></details>
           </section>}
           {state.cancelResult && <p>{state.cancelResult}</p>}
-          {state.evidence && <section aria-label="근거 본문"><h3>근거 본문</h3><p className="answer-text">{state.evidence}</p></section>}
-          {state.exported && <section aria-label="내보내기 결과"><ReadableValue value={JSON.parse(state.exported) as unknown} />
-            <a download="nori-ai-block.json" href={`data:application/json;charset=utf-8,${encodeURIComponent(state.exported)}`}>다운로드</a>
-          </section>}
         </>)}
       </main>
       {protectedView && !reviewMode && <footer>

@@ -135,13 +135,20 @@ export class TestBackend {
         : { status: job.status === 'PARTIAL' ? 'PARTIAL' : this.noEvidence ? 'EMPTY' : 'SUCCESS', errorCode: null, clarification: null, payload: {
         answer: this.noEvidence ? { kind: 'NO_EVIDENCE', text: '근거 없음', citations: [], sentences: [] } : {
           kind: job.status === 'PARTIAL' ? 'PARTIAL' : 'ANSWER', text: '<img src=x onerror="window.htmlExecuted=true"> 검증 답변',
-          citations: [{ number: 1, evidenceId: 'evidence-1', sourceType: 'SYSTEM', location: { ref: 'system://TEST/item/1' } }],
+          citations: Array.from({ length: this.citationCount }, (_, index) => ({ number: index + 1, evidenceId: `evidence-${index + 1}`,
+            sourceType: 'SYSTEM', location: { ref: `system://TEST/item/${index + 1}` }, title: '설비 등록 정보' })),
           sentences: [{ text: '검증 답변', citations: [1] }],
-        }, blocks: [{ id: 'block-1', type: 'text', text: '내보내기 자료' }],
+        }, blocks: [
+          { id: 'b1', type: 'table', dataRef: { ownerSystem: 'TEST', ref: 'system://TEST/item/1' },
+            content: { columns: ['name'], rows: [{ name: '업무 원문 표식' }] } },
+          { id: 'b2', type: 'table', dataRef: null, content: { columns: ['capabilityId', 'description', 'exampleQuestions'],
+            rows: [{ capabilityId: 'test.read', description: '설비 상태 조회', exampleQuestions: ['설비 상태를 알려 주세요.'] }] } },
+        ],
       } },
     }
   }
   noEvidence = false
+  citationCount = 1
   seedReview(subject = 'alice', state: ReviewStatus = 'OPEN', evidenceType: 'DOCUMENT' | 'SYSTEM' | 'EMPTY' = 'DOCUMENT'): string {
     const feedbackId = `00000000-0000-4000-8000-${String(++this.serial).padStart(12, '0')}`
     const bodyMasked = '검토 근거 <b>실행 금지</b>'
@@ -347,8 +354,7 @@ export class TestBackend {
         if (!job.active) response.end()
         return
       }
-      if (suffix === '/evidence/evidence-1/source') { this.json(response, 200, { maskedText: '저장된 근거 본문 <b>문자열</b>' }); return }
-      if (suffix === '/blocks/block-1/export') { this.json(response, 200, { id: 'block-1', type: 'text', text: '내보내기 자료' }); return }
+      if (/^\/evidence\/evidence-\d+\/source$/.test(suffix)) { this.json(response, 200, { maskedText: '저장된 근거 본문 <b>문자열</b>' }); return }
     }
     this.json(response, 404)
   }
