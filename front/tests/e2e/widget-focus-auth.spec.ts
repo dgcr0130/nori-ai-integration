@@ -1,6 +1,41 @@
 import { test, expect, login, openWidget, questionInput, send } from './backend'
 import { reveal } from './redesign-helpers'
 
+test('A-R2 결합 회귀: 삭제 수락 뒤 지연 SESSION과 window focus는 SESSION1·DELETE1·CSRF를 유지한다', async ({ page, context, backend }) => {
+  backend.seed('alice', '삭제 대상'); backend.seed('alice', '보존 대상')
+  await login(context, backend); await openWidget(page, backend)
+  await page.getByRole('button', { name: '대화 목록', exact: true }).click()
+  await page.getByRole('button', { name: '삭제 대상', exact: true }).click()
+  await expect(page.getByRole('button', { name: '삭제 대상', exact: true })).toHaveAttribute('aria-current', 'true')
+  const start = backend.apiRequests.length
+  let release = () => {}, started = false
+  const held = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/session', async route => {
+    const response = await route.fetch()
+    started = true; await held; await route.fulfill({ response })
+  }, { times: 1 })
+  try {
+    page.once('dialog', dialog => dialog.accept())
+    await page.getByRole('button', { name: '삭제 대상 삭제', exact: true }).click()
+    await expect.poll(() => started).toBe(true)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    expect(backend.apiRequests.slice(start).filter(row => row.path.endsWith('/session'))).toHaveLength(1)
+    expect(backend.apiRequests.slice(start).filter(row => row.method === 'DELETE')).toHaveLength(0)
+    release()
+    await expect(page.getByRole('button', { name: '삭제 대상 삭제', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '보존 대상', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '새 대화', exact: true })).toBeEnabled()
+    const requests = backend.apiRequests.slice(start)
+    expect(requests.filter(row => row.path.endsWith('/session'))).toHaveLength(1)
+    const deletes = requests.filter(row => row.method === 'DELETE')
+    expect(deletes).toHaveLength(1)
+    expect(deletes[0]?.headers['x-nori-ai-csrf']).toBe('fake-csrf')
+    expect(deletes[0]?.subject).toBe('alice')
+    expect(requests.filter(row => /\/conversations\?/.test(row.path))).toHaveLength(1)
+    expect(backend.conversations.size).toBe(1)
+  } finally { release() }
+})
+
 test('일반 focus의 지연 인증 중 대화 DOM·초안·두 스크롤·누적 목록을 유지한다', async ({ page, context, backend }) => {
   for (let index = 0; index < 45; index++) backend.seed('alice', `보존 대화 ${index}`)
   const id = [...backend.conversations.keys()].at(-1)!
@@ -44,7 +79,7 @@ test('일반 focus의 지연 인증 중 대화 DOM·초안·두 스크롤·누�
   } finally { release(); await input?.dispose() }
 })
 
-test('정상 focus는 열린 자료·피드백 초안을 유지하고 활성 SSE를 교체하거나 질문을 재접수하지 않는다', async ({ page, context, backend }) => {
+test('정상 focus는 열린 의견·피드백 초안을 유지하고 활성 SSE를 교체하거나 질문을 재접수하지 않는다', async ({ page, context, backend }) => {
   await login(context, backend); await openWidget(page, backend)
   const job = await send(page, backend)
   await expect.poll(() => backend.openStreams).toBe(1)
@@ -58,16 +93,14 @@ test('정상 focus는 열린 자료·피드백 초안을 유지하고 활성 SSE
   expect(backend.jobs.size).toBe(1)
   backend.event(job, 'job.completed', '2')
   await expect(page.getByRole('region', { name: '답변', exact: true })).toBeVisible()
-  await reveal(page, '참고 자료 1개'); await reveal(page, '의견 남기기')
+  await reveal(page, '의견 남기기')
   await page.getByRole('textbox', { name: '지적', exact: true }).fill('피드백 초안')
-  await page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true }).click()
-  await expect(page.getByLabel('근거 1 본문', { exact: true })).toBeVisible()
-  const details = await page.locator('details.sources').filter({ hasText: '참고 자료 1개' }).elementHandle()
+  const details = await page.locator('details').filter({ hasText: '의견 남기기' }).elementHandle()
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-  await expect(page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '도움이 됨', exact: true })).toBeEnabled()
   expect(await details!.evaluate(node => node.isConnected && node instanceof HTMLDetailsElement && node.open)).toBe(true)
   await expect(page.getByRole('textbox', { name: '지적', exact: true })).toHaveValue('피드백 초안')
-  await expect(page.getByLabel('근거 1 본문', { exact: true })).toBeVisible()
+  expect(backend.apiRequests.filter(row => /evidence|export/.test(row.path))).toHaveLength(0)
   expect(backend.apiRequests.filter(row => row.method === 'POST' && /query|messages/.test(row.path))).toHaveLength(1)
   await details?.dispose()
 })
@@ -85,7 +118,7 @@ for (const failure of ['503', 'transport', 'invalid', 'empty-subject', 'invalid-
         if (failure === 'transport') return route.abort('failed')
         if (failure === '503') return route.fulfill({ status: 503, json: { code: 'AUTH_UNAVAILABLE', message: '인증 확인 불가' } })
         return route.fulfill({ json: failure === 'invalid' ? { subject: 'alice', canReview: 'wrong' }
-          : { subject: failure === 'empty-subject' ? '' : 'alice', canReview: true, integrationVersion: '1.0.5',
+          : { subject: failure === 'empty-subject' ? '' : 'alice', canReview: true, integrationVersion: '1.0.6',
             csrf: failure === 'invalid-csrf' ? { headerName: '', token: 'invalid' } : null } })
       })
       await page.evaluate(() => window.dispatchEvent(new Event('focus')))
@@ -178,7 +211,7 @@ test('동기 인증 무효화는 최소화·늦은 세션 성공을 무시하고
   await page.route('**/session', async route => {
     if (started) return route.continue()
     started = true; await held
-    await route.fulfill({ json: { subject: 'alice', canReview: true, integrationVersion: '1.0.5', csrf: { headerName: 'X-Nori-AI-CSRF', token: 'stale' } } })
+    await route.fulfill({ json: { subject: 'alice', canReview: true, integrationVersion: '1.0.6', csrf: { headerName: 'X-Nori-AI-CSRF', token: 'stale' } } })
     finished = true
   })
   try {

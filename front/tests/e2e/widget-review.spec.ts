@@ -21,8 +21,9 @@ const location = { bucket: 'manuals', objectKey: 'guide.md', revision: 'a'.repea
 async function answer(page: Page, backend: TestBackend): Promise<string> {
   const id = await send(page, backend)
   backend.event(id, 'job.completed', '2')
-  await expect(button(page, '도움이 됨')).toBeVisible()
+  await expect(page.getByRole('region', { name: '피드백', exact: true })).toBeVisible()
   await reveal(page, '의견 남기기')
+  await expect(button(page, '도움이 됨')).toBeVisible()
   return id
 }
 async function openReview(page: Page, id: string, backend: TestBackend): Promise<void> {

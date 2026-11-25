@@ -31,9 +31,10 @@ export function Feedback({ draft, change, submit, blocked }: {
 }) {
   return <section aria-label="피드백">
     <details><summary>의견 남기기</summary><label>지적<textarea aria-label="지적" value={draft.comment} disabled={draft.busy} onChange={event => change(event.target.value)} /></label>
-    <p className="muted">{characterCount(draft.comment)} / 2000자</p></details>
+    <p className="muted">{characterCount(draft.comment)} / 2000자</p>
     <button disabled={draft.busy || blocked} onClick={() => submit('UP')}>도움이 됨</button>
     <button disabled={draft.busy || blocked} onClick={() => submit('DOWN')}>도움이 안 됨</button>
     {draft.receipt && <Receipt value={draft.receipt} />}
+    </details>
   </section>
 }

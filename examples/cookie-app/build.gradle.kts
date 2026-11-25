@@ -6,7 +6,7 @@ plugins {
 
 java { toolchain { languageVersion.set(JavaLanguageVersion.of(21)) } }
 dependencies {
-    implementation("com.nori.ai:ai-integration-spring-boot-starter:1.0.5")
+    implementation("com.nori.ai:ai-integration-spring-boot-starter:1.0.6")
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("org.springframework.boot:spring-boot-starter-security")
     testImplementation("org.springframework.boot:spring-boot-starter-test")

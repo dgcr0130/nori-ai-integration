@@ -32,10 +32,10 @@ class AiPackagingTest {
             assertThat(registration.strip()).isEqualTo(AiIntegrationAutoConfiguration.class.getName());
             Properties version = new Properties();
             version.load(jar.getInputStream(jar.getJarEntry("META-INF/ai-integration/version.properties")));
-            assertThat(version.getProperty("integrationVersion")).isEqualTo("1.0.5")
+            assertThat(version.getProperty("integrationVersion")).isEqualTo("1.0.6")
                     .isEqualTo(AiIntegrationAutoConfiguration.INTEGRATION_VERSION);
             assertThat(Path.of(jar.getName()).getFileName().toString())
-                    .isEqualTo("ai-integration-spring-boot-starter-1.0.5.jar");
+                    .isEqualTo("ai-integration-spring-boot-starter-1.0.6.jar");
         }
     }
 }

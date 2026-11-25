@@ -1,4 +1,3 @@
-import { reveal } from './redesign-helpers'
 import { test, expect, login, openWidget, questionInput, send } from './backend'
 
 test('requestHeaders 동기·Promise를 매 요청 호출하고 금지 이름·CSRF·credentials를 적용한다', async ({ page, context, backend }) => {
@@ -24,9 +23,7 @@ test('requestHeaders 동기·Promise를 매 요청 호출하고 금지 이름·C
   const jobId = await send(page, backend)
   backend.event(jobId, 'job.completed', '2')
   await expect(page.getByRole('region', { name: '답변', exact: true })).toBeVisible()
-  await reveal(page, '참고 자료 1개')
-  await page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true }).click()
-  await expect(page.getByLabel('근거 1 본문', { exact: true })).toBeVisible()
+  expect(backend.apiRequests.filter(row => /evidence|export/.test(row.path))).toHaveLength(0)
   const api = backend.apiRequests
   const calls = await page.evaluate(() => {
     const getter: unknown = Reflect.get(window, 'headerCalls')
@@ -167,6 +164,8 @@ test('SSE 첫 표시·주석·무종결 중단·사용자 재연결·마지막 i
   await expect(page.getByRole('button', { name: '다시 연결', exact: true })).toBeVisible()
   expect(backend.apiRequests.filter(row => row.path.endsWith('/session')).length).toBe(sessionCount + 1)
   expect(backend.apiRequests.filter(row => row.path.endsWith('/events'))).toHaveLength(1)
+  await page.getByRole('button', { name: '결과 다시 조회', exact: true }).click()
+  await expect(page.getByRole('region', { name: '답변', exact: true })).toHaveText('답변을 준비하고 있습니다.')
   backend.event(jobId, 'tool.started', '3', { toolId: 'test.read', status: 'RUNNING' })
   await page.getByRole('button', { name: '다시 연결', exact: true }).click()
   await expect(page.getByRole('log')).toContainText('자료를 확인하고 있습니다.')
@@ -175,9 +174,6 @@ test('SSE 첫 표시·주석·무종결 중단·사용자 재연결·마지막 i
   expect(reconnect[1]?.headers['last-event-id']).toBe('2')
   expect(reconnect[1]?.headers.authorization).toBeUndefined()
   await expect(page.getByRole('log').getByText('자료를 확인하고 있습니다.', { exact: true })).toHaveCount(1)
-  await reveal(page, '진행 확인')
-  await page.getByRole('button', { name: '결과 다시 조회', exact: true }).click()
-  await expect(page.getByRole('region', { name: '답변', exact: true })).toHaveText('답변을 준비하고 있습니다.')
   backend.event(jobId, 'job.partial', '4')
   await expect(page.getByRole('region', { name: '답변', exact: true })).toContainText('검증 답변')
   await expect(page.getByRole('button', { name: '취소', exact: true })).toHaveCount(0)
@@ -213,52 +209,20 @@ test('SSE 종결 없는 종료 뒤 session 401은 메모리·스트림을 지우
   expect(backend.apiRequests.filter(row => row.path.endsWith('/events'))).toHaveLength(1)
 })
 
-test('근거 resultAccess=DENIED는 열려 있던 다른 근거 본문도 지우고 토큰 단위 답변을 만들지 않는다', async ({ page, context, backend }) => {
-  backend.citationCount = 2
-  await login(context, backend)
-  await openWidget(page, backend)
+test('결과 DENIED는 답변과 의견을 회수하고 토큰 단위 답변을 만들지 않는다', async ({ page, context, backend }) => {
+  await login(context, backend); await openWidget(page, backend)
   const jobId = await send(page, backend)
   backend.event(jobId, 'job.started', '2', { jobStatus: 'RUNNING' })
   await expect(page.getByRole('log')).toContainText('답변을 준비하고 있습니다.')
   await expect(page.getByRole('region', { name: '답변', exact: true })).toHaveCount(0)
+  await page.route(`**/v1/analyses/${jobId}`, route => route.fulfill({ json: {
+    jobId, jobStatus: 'SUCCEEDED', resultAccess: 'DENIED', result: null,
+  } }))
   backend.event(jobId, 'job.completed', '3')
-  await expect(page.getByRole('region', { name: '답변', exact: true })).toContainText('검증 답변')
-  await reveal(page, '참고 자료 2개')
-  await page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true }).click()
-  await expect(page.getByLabel('근거 1 본문', { exact: true })).toBeVisible()
-  backend.failNext({ method: 'GET', path: /\/evidence\/evidence-2\/source$/, status: 200,
-    body: { jobId, jobStatus: 'SUCCEEDED', resultAccess: 'DENIED' } })
-  await page.getByRole('button', { name: '[2] 설비 등록 정보', exact: true }).click()
-  await expect(page.getByRole('alert')).toHaveText('근거를 읽을 권한이 없습니다.')
-  await expect(page.getByLabel('근거 1 본문', { exact: true })).toHaveCount(0)
-  await expect(page.getByLabel('근거 2 본문', { exact: true })).toHaveCount(0)
-})
-
-test('권한 거절 뒤 늦게 도착한 근거 성공은 본문을 되살리지 않는다', async ({ page, context, backend }) => {
-  backend.citationCount = 2
-  await login(context, backend)
-  await openWidget(page, backend)
-  const jobId = await send(page, backend)
-  backend.event(jobId, 'job.completed', '2')
-  await reveal(page, '참고 자료 2개')
-  backend.failNext({ method: 'GET', path: /\/evidence\/evidence-1\/source$/, status: 200, hold: true })
-  await page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true }).click()
-  await expect.poll(() => backend.pendingResponses.size).toBe(1)
-  await expect(page.getByRole('region', { name: '답변', exact: true }).getByRole('status')).toHaveText('근거를 불러오고 있습니다.')
-  backend.failNext({ method: 'GET', path: /\/evidence\/evidence-2\/source$/, status: 403,
-    body: { message: '인증 또는 요청 범위를 확인할 수 없습니다.', requestId: 'gateway-request' } })
-  await page.getByRole('button', { name: '[2] 설비 등록 정보', exact: true }).click()
-  await expect(page.getByRole('alert')).toHaveText('인증 또는 요청 범위를 확인할 수 없습니다.')
-  for (const response of backend.pendingResponses) {
-    response.writeHead(200, { 'Content-Type': 'application/json' })
-    response.end(JSON.stringify({ maskedText: '지연된 비공개 표식' }))
-  }
-  await expect.poll(() => backend.pendingResponses.size).toBe(0)
-  // 같은 근거를 다시 열어 브라우저가 지연 응답을 소비한 뒤에도 그 본문이 남지 않았음을 대조한다.
-  await page.getByRole('button', { name: '[2] 설비 등록 정보', exact: true }).click()
-  await expect(page.getByLabel('근거 2 본문', { exact: true })).toBeVisible()
-  await expect(page.getByRole('region', { name: '답변', exact: true })).not.toContainText('지연된 비공개 표식')
-  await expect(page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByText('결과를 읽을 권한이 없습니다.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '피드백', exact: true })).toHaveCount(0)
+  await expect(page.locator('main')).not.toContainText('검증 답변')
+  expect(backend.apiRequests.filter(row => /evidence|export/.test(row.path))).toHaveLength(0)
 })
 
 test('태그 제거 중 requestHeaders Promise가 완료되어도 backend로 전송하지 않는다', async ({ page, backend }) => {

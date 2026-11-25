@@ -1,4 +1,3 @@
-import { reveal } from './redesign-helpers'
 import { test, expect, login, openWidget, questionInput, send } from './backend'
 
 test('별도 React와 서로 다른 전역 CSS에서도 같은 태그·화면·Shadow 스타일을 쓴다', async ({ browser, backend }) => {
@@ -79,7 +78,7 @@ test('크기 상한·위치·색 기본값과 잘못된 api-base·미등록 속�
   }
 })
 
-test('고정 IANA 시계의 context·messages 경로·빈 생성·검증 답변·근거 펼침·기능 목록', async ({ browser, backend }) => {
+test('고정 IANA 시계의 context·messages 경로·빈 생성·검증 답변·보조 자료 UI 없음', async ({ browser, backend }) => {
   const context = await browser.newContext({ timezoneId: 'Asia/Seoul' })
   try {
     await login(context, backend)
@@ -112,23 +111,8 @@ test('고정 IANA 시계의 context·messages 경로·빈 생성·검증 답변�
     await expect(page.getByRole('region', { name: '질문 진행', exact: true })).toHaveCount(0)
     await expect(answer).not.toContainText('업무 원문 표식')
     await expect(answer.getByText('내보내기')).toHaveCount(0)
-    await reveal(page, '기능 목록')
-    await expect(answer).toContainText('설비 상태 조회')
-    await expect(answer).toContainText('설비 상태를 알려 주세요.')
-    await expect(answer).not.toContainText('test.read')
-    await reveal(page, '참고 자료 1개')
-    const source = page.getByRole('button', { name: '[1] 설비 등록 정보', exact: true })
-    await source.click()
-    await expect(page.getByLabel('근거 1 본문', { exact: true })).toContainText('저장된 근거 본문 <b>문자열</b>')
-    await expect(source).toHaveAttribute('aria-expanded', 'true')
-    await source.click()
-    await expect(page.getByLabel('근거 1 본문', { exact: true })).toHaveCount(0)
-    await expect(source).toHaveAttribute('aria-expanded', 'false')
-    backend.failNext({ method: 'GET', path: /\/evidence\/evidence-1\/source$/, status: 403, body: { message: '요청 권한이 없습니다', requestId: 'gateway-request' } })
-    await source.click()
-    await expect(page.getByRole('alert')).toHaveText('요청 권한이 없습니다')
-    await expect(page.getByLabel('근거 1 본문', { exact: true })).toHaveCount(0)
-    await expect(source).toHaveAttribute('aria-expanded', 'false')
+    await expect(answer.locator('summary')).toHaveText(['의견 남기기'])
+    expect(backend.apiRequests.filter(row => /evidence|export/.test(row.path))).toHaveLength(0)
     await page.getByRole('button', { name: '대화 목록', exact: true }).click()
     await page.getByRole('button', { name: '설비 상태를 알려 주세요.', exact: true }).click()
     await expect(page.getByRole('region', { name: '대화 내용', exact: true })).toContainText('검증 답변')
