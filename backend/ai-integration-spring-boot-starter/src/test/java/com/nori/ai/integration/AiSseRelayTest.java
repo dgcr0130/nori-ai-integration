@@ -139,8 +139,7 @@ class AiSseRelayTest {
     @Test void browserDisconnectUpstreamEofAndErrorsReleaseTimersAndConnections() throws Exception {
         try (var source = new Source()) {
             gateway.streaming = source;
-            var response = connect();
-            response.body().close();
+            disconnectAfterFirstEvent(connect());
             for (int index = 0; index < 20 && relay.activeConnections() > 0; index++) {
                 source.send("data: " + "x".repeat(4096) + "\n\n");
             }
@@ -154,6 +153,27 @@ class AiSseRelayTest {
             try (var input = response.body()) { assertThat(new String(input.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo(": connected\n\n"); }
             assertClean();
         } finally { gateway.streaming = null; }
+    }
+
+    @Test void idleBrowserDisconnectIsReleasedByKeepaliveAndCompletedOnlyOnce() throws Exception {
+        try (var source = new Source()) {
+            gateway.streaming = source;
+            disconnectAfterFirstEvent(connect());
+            // 상류가 조용하면 브라우저 끊김은 다음 keepalive 쓰기에서만 드러난다. 그 쓰기 실패로 시작된 컨테이너 onError와
+            // 타이머 스레드의 종료가 경합해도 AsyncContext 사용 오류 없이 자리와 상류 연결을 반납해야 한다.
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+                timers.tick();
+                assertThat(relay.activeConnections()).isZero();
+            });
+            assertClean(); source.detectDisconnect();
+        } finally { gateway.streaming = null; }
+    }
+
+    /** 첫 이벤트를 읽어 응답 구독이 생긴 뒤 닫는다. 구독 전 close()는 JDK가 연결 종료를 구독 시점으로 미루므로 브라우저가 닫힌 시점을 정할 수 없다. */
+    private static void disconnectAfterFirstEvent(HttpResponse<InputStream> response) throws IOException {
+        try (var input = response.body()) {
+            assertThat(new String(input.readNBytes(13), StandardCharsets.UTF_8)).isEqualTo(": connected\n\n");
+        }
     }
 
     @Test void slowNonblockingBrowserHasBoundedQueueAndNoLateWrites() throws Exception {
@@ -192,6 +212,32 @@ class AiSseRelayTest {
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
             assertThat(relay.activeConnections()).isZero(); assertThat(relay.pendingTimers()).isZero();
         });
+    }
+
+    @Test void cleanupFailureStillReturnsConnectionSlotAndTimers() throws Exception {
+        var properties = PhaseTwoFixtures.keys(directory.resolve("cleanup"), gateway.base(), BrowserCredential.HEADER,
+                List.of("AI_READ", "AI_REVIEW")).properties();
+        try (var source = new Source(); var ownGateway = new com.nori.ai.integration.web.AiGatewayRelay(properties)) {
+            gateway.streaming = source;
+            var identities = new com.nori.ai.integration.security.AiIdentityService(request -> PhaseTwoFixtures.LOGGED_IN, properties);
+            var timers = new PhaseTwoFixtures.ManualTimers();
+            try (var own = new AiSseRelay(ownGateway, identities, timers)) {
+                var request = new MockHttpServletRequest("GET", "/api/ai/v1/analyses/job/events"); request.setAsyncSupported(true);
+                var prepared = ownGateway.prepare(request, "/v1/analyses/job/events", new byte[0], "fixture");
+                // 정리가 시작되면 ended가 되어 다시 정리할 기회가 없으므로, 정리 단계 하나가 실패해도 자리를 잃으면 안 됩니다.
+                var failing = new org.apache.hc.client5.http.classic.methods.HttpUriRequestBase("GET", prepared.getUri()) {
+                    @Override public boolean cancel() { super.cancel(); throw new IllegalStateException("cleanup-failure"); }
+                };
+                prepared.headerIterator().forEachRemaining(failing::addHeader);
+                own.start(request, new MockHttpServletResponse(), failing, identities.current(request),
+                        new com.nori.ai.integration.observability.AiRequestLog(properties));
+                assertThat(source.started.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(own.activeConnections()).isEqualTo(1);
+                org.assertj.core.api.Assertions.assertThatThrownBy(timers::expire).hasMessage("cleanup-failure");
+                assertThat(own.activeConnections()).isZero();
+                assertThat(own.pendingTimers()).isZero();
+            }
+        } finally { gateway.streaming = null; }
     }
 
     @Test void streamAdmissionDoesNotAccumulateMoreThan32ReadersOrTimers() throws Exception {

@@ -26,7 +26,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hc.client5.http.classic.methods.HttpUriRequestBase;
-import org.apache.hc.core5.http.ClassicHttpResponse;
 
 public final class AiSseRelay implements AutoCloseable {
     private static final int MAX_CONNECTIONS = 32;
@@ -84,12 +83,13 @@ public final class AiSseRelay implements AutoCloseable {
         private final ArrayDeque<byte[]> output = new ArrayDeque<>();
         private final AtomicBoolean ended = new AtomicBoolean();
         private final TerminalParser parser = new TerminalParser();
-        private ClassicHttpResponse connection;
         private ServletOutputStream downstream;
         private volatile ScheduledFuture<?> heartbeat;
         private volatile ScheduledFuture<?> deadline;
         private int queued;
         private boolean draining;
+        private boolean completing;
+        private boolean containerError;
 
         Stream(HttpServletRequest request, HttpServletResponse response, HttpUriRequestBase upstream,
                 AiRequestIdentity initial, AiRequestLog log) {
@@ -105,7 +105,6 @@ public final class AiSseRelay implements AutoCloseable {
             try (var opened = gateway.open(upstream)) {
                 synchronized (this) {
                     if (ended.get()) return;
-                    connection = opened;
                     gateway.copyHeaders(opened, response, log);
                     if (opened.getCode() >= 200 && opened.getCode() < 300) {
                         response.setHeader("X-Accel-Buffering", "no");
@@ -143,13 +142,12 @@ public final class AiSseRelay implements AutoCloseable {
             }
         }
 
-        void tick() {
+        synchronized void tick() {
+            // 종료 뒤에는 컨테이너가 요청·응답 객체를 재사용하므로 신원 확인·기록·쓰기를 모두 잠금 안에서 종료 전에만 한다.
             if (ended.get()) return;
             try {
                 if (!initial.equals(identities.current(request))) { close(); return; }
-                synchronized (this) {
-                    if (downstream != null && !draining) enqueue(": keepalive\n\n".getBytes(StandardCharsets.US_ASCII));
-                }
+                if (downstream != null && !draining) enqueue(": keepalive\n\n".getBytes(StandardCharsets.US_ASCII));
             } catch (Failure failure) { log.record("identity", response.getStatus(), failure.code(), null, null); close(); }
             catch (IOException disconnected) { log.record("relay", response.getStatus(), "GATEWAY_UNAVAILABLE", null, null); close(); }
         }
@@ -185,34 +183,57 @@ public final class AiSseRelay implements AutoCloseable {
         }
 
         void close() {
-            if (release()) async.complete();
+            if (release()) complete();
+        }
+
+        /**
+         * Tomcat은 AsyncListener.onError가 반환된 뒤 응용 스레드의 AsyncContext 사용을 IllegalStateException으로 거부한다.
+         * 이 리스너는 startAsync 직후 첫 번째로 등록되어 onError가 가장 먼저 호출되므로, 같은 잠금으로 onError 진입 전에만 여기서 끝내고
+         * 그 뒤의 종료는 onError(컨테이너 스레드)가 맡는다.
+         */
+        private synchronized void complete() {
+            if (completing || containerError) return;
+            completing = true;
+            async.complete();
         }
 
         boolean release() {
-            final ClassicHttpResponse closing;
+            int status;
             synchronized (this) {
                 // 종료와 쓰기를 같은 잠금으로 직렬화하여 종료 뒤 새 쓰기를 막는다.
                 if (!ended.compareAndSet(false, true)) return false;
                 output.clear();
                 queued = 0;
-                closing = connection;
+                // 잠금을 놓으면 컨테이너가 complete 후 응답을 재사용할 수 있으므로 기록할 상태 코드는 여기서 읽는다.
+                status = response.getStatus();
             }
-            upstream.cancel();
-            var tick = heartbeat;
-            var expiry = deadline;
-            if (tick != null) tick.cancel(false);
-            if (expiry != null) expiry.cancel(false);
-            if (closing != null) {
-                try { closing.close(); }
-                catch (IOException failure) { log.record("relay", response.getStatus(), "GATEWAY_UNAVAILABLE", null, null); }
+            try {
+                var tick = heartbeat;
+                var expiry = deadline;
+                if (tick != null) tick.cancel(false);
+                if (expiry != null) expiry.cancel(false);
+                // 상류 응답 본문은 스레드 안전하지 않으므로 읽기 스레드만 닫는다(read의 try-with-resources).
+                // 다른 스레드는 교환을 취소해 진행 중인 읽기를 끝내기만 한다.
+                upstream.cancel();
+            } finally {
+                // ended가 true가 되면 다시 정리할 기회가 없으므로 정리 단계가 실패해도 연결 자리는 반드시 반납한다.
+                active.remove(this);
             }
-            active.remove(this);
-            log.record("relay", response.getStatus(), null, null, null);
+            log.record("relay", status, null, null, null);
             return true;
         }
         @Override public void onComplete(AsyncEvent event) { release(); }
         @Override public void onTimeout(AsyncEvent event) { close(); }
-        @Override public void onError(AsyncEvent event) { close(); }
+        @Override public void onError(AsyncEvent event) {
+            synchronized (this) { containerError = true; }
+            release();
+            synchronized (this) {
+                // 브라우저 쓰기 실패처럼 응용 스레드가 먼저 종료를 시작했어도 아직 complete하지 않았으면 컨테이너 스레드가 끝낸다.
+                if (completing) return;
+                completing = true;
+            }
+            async.complete();
+        }
         @Override public void onStartAsync(AsyncEvent event) { event.getAsyncContext().addListener(this); }
     }
 
