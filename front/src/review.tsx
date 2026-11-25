@@ -202,8 +202,8 @@ function CorrectionFields({ draft, busy, change }: { draft: ReviewDraft; busy: b
   </fieldset>
 }
 
-export function Review({ state, change, submit }: {
-  state: ReviewState; change: (draft: ReviewDraft) => void; submit: () => void
+export function Review({ state, change, submit, blocked }: {
+  blocked: boolean; state: ReviewState; change: (draft: ReviewDraft) => void; submit: () => void
 }) {
   const { detail, draft, busy } = state
   if (!detail) return <section aria-label="검토 내용"><h2>답변 검토</h2><p className="muted">목록에서 검토할 항목을 선택해 주세요.</p></section>
@@ -224,7 +224,7 @@ export function Review({ state, change, submit }: {
       {noteOnly && <p>실시간 근거 전용: 조치 메모만 보냅니다.</p>}
       {(noteOnly || draft.cause === 'REJECT' || draft.cause === 'DOCUMENT') && <label>조치 메모<textarea aria-label="조치 메모" disabled={busy} value={draft.note} onChange={event => change({ ...draft, note: event.target.value })} /></label>}
       {!noteOnly && draft.cause !== 'REJECT' && <CorrectionFields draft={draft} busy={busy} change={change} />}
-      <button className="primary-button" disabled={busy} onClick={submit}>조치 제출</button>
+      <button className="primary-button" disabled={busy || blocked} onClick={submit}>조치 제출</button>
     </section>}
   </section>
 }

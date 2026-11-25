@@ -84,7 +84,7 @@ export class ConsumerApp {
     const address = this.gateway.address()
     if (!address || typeof address === 'string') throw new Error('Gateway 대역 주소 오류')
     const module = resolve(process.cwd(), `../examples/${this.mode}-app`)
-    const child = spawn('java', ['-jar', join(module, `build/libs/${this.mode}-app-1.0.3.jar`), '--server.port=0'], {
+    const child = spawn('java', ['-jar', join(module, `build/libs/${this.mode}-app-1.0.4.jar`), '--server.port=0'], {
       windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env,
         EXAMPLE_GATEWAY_URL: `http://127.0.0.1:${address.port}`, EXAMPLE_SERVICE_TOKEN_FILE: join(this.directory, 'service'),
         EXAMPLE_GATEWAY_TOKEN_FILE: join(this.directory, 'gateway'), EXAMPLE_ACTOR_JWK_FILE: join(this.directory, 'actor'),

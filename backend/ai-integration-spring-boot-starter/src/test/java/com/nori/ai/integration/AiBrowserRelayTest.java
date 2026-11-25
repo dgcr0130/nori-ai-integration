@@ -122,7 +122,7 @@ class AiBrowserRelayTest {
         var session = app.send("GET", "/api/ai/session", new byte[0]);
         var body = PhaseTwoFixtures.JSON.readTree(session.body());
         assertThat(body.size()).isEqualTo(4); assertThat(body.get("canReview").asBoolean()).isTrue();
-        assertThat(body.get("integrationVersion").asString()).isEqualTo("1.0.3");
+        assertThat(body.get("integrationVersion").asString()).isEqualTo("1.0.4");
         assertThat(body.get("csrf").isNull()).isTrue();
         assertThat(session.headers().firstValue("Set-Cookie")).isEmpty();
         var inheritedRequest = new MockHttpServletRequest("GET", "/api/ai/session");

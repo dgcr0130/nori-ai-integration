@@ -15,6 +15,7 @@ class NoriAiWidget extends HTMLElement {
   #launcher: HTMLButtonElement | undefined
   #launcherRoot: Root | undefined
   #base: string | undefined
+  #authState: 'signed-out' | 'invalidate' | 'check' | undefined
   declare requestHeaders?: RequestHeaders
 
   get integrationVersion(): string {
@@ -38,6 +39,8 @@ class NoriAiWidget extends HTMLElement {
     this.#mount = document.createElement('div')
     this.#frame.append(this.#launcher, this.#mount)
     shadow.append(style, this.#frame)
+    window.addEventListener('nori-ai-auth-change', this.#authChange)
+    this.#authChange()
     this.#layout()
   }
 
@@ -48,6 +51,7 @@ class NoriAiWidget extends HTMLElement {
     this.#root = undefined; this.#model = undefined; this.#launcherRoot = undefined
     window.removeEventListener('resize', this.#layout)
     window.removeEventListener('focus', this.#focus)
+    window.removeEventListener('nori-ai-auth-change', this.#authChange)
     this.#launcher?.removeEventListener('click', this.#open)
     this.shadowRoot?.replaceChildren()
     this.#frame = undefined; this.#mount = undefined; this.#launcher = undefined
@@ -64,6 +68,7 @@ class NoriAiWidget extends HTMLElement {
     if (!this.#model) {
       this.#base = base
       this.#model = new ConversationModel(new AiApi(this, base))
+      if (this.#authState) this.#model.invalidateAuth(this.#authState === 'check' ? 'invalidate' : this.#authState)
       this.#root = createRoot(this.#mount)
       this.#root.render(<Conversation model={this.#model} close={this.#close} />)
     }
@@ -83,6 +88,14 @@ class NoriAiWidget extends HTMLElement {
   }
 
   #focus = (): void => { flushSync(() => { void this.#model?.focus() }) }
+
+  // 호스트 통지는 신원의 증명이 아니다. 늦게 붙은 위젯도 같은 탭의 로그아웃을 먼저 적용한다.
+  #authChange = (): void => {
+    const state: unknown = Reflect.get(window, 'noriAiAuthState')
+    if (state !== 'signed-out' && state !== 'invalidate' && state !== 'check') return
+    this.#authState = state
+    flushSync(() => this.#model?.invalidateAuth(state))
+  }
 
   #layout = (): void => {
     if (!this.#frame) return

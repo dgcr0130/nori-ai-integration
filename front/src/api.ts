@@ -161,7 +161,12 @@ export class AiApi {
       subject: text(value.subject), canReview: value.canReview, integrationVersion: text(value.integrationVersion),
       csrf: csrf === null ? null : { headerName: text(csrf.headerName), token: text(csrf.token) },
     }
-    this.csrf = session.csrf
+    if (!session.subject.trim() || !session.integrationVersion.trim()
+      || (session.csrf !== null && !session.csrf.token.trim())) throw new Error('응답 형식을 확인할 수 없습니다.')
+    if (session.csrf !== null) {
+      try { new Headers([[session.csrf.headerName, session.csrf.token]]) }
+      catch { throw new Error('응답 형식을 확인할 수 없습니다.') }
+    }
     return session
   }
 }

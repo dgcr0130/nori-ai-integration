@@ -288,7 +288,7 @@ for (const [status, code] of [[400, 'INPUT_INVALID'], [400, 'INVALID_INPUT'], [4
 
 for (const [status, code, message] of [[503, 'AUTH_UNAVAILABLE', '로그인 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.'],
   [500, 'AUTH_RESULT_INVALID', '로그인 정보 처리에 오류가 발생했습니다.'], [500, 'SIGNING_FAILED', 'AI 요청 인증 정보를 만들 수 없습니다.']] as const) {
-  test(`피드백 전 ${code}의 message 유지·전체 메모리 정리`, async ({ page, context, backend }) => {
+  test(`피드백 전 ${code}의 message 유지·메모리 격리 후 같은 신원 복구`, async ({ page, context, backend }) => {
     await login(context, backend); await openWidget(page, backend); await answer(page, backend)
     await input(page, '지적').fill('인증 오류 정리 표식')
     backend.failNext({ method: 'GET', path: /\/session$/, status, body: jarError(code, message) })
@@ -296,6 +296,10 @@ for (const [status, code, message] of [[503, 'AUTH_UNAVAILABLE', '로그인 정�
     await expect(page.getByRole('alert')).toHaveText(message)
     await expect(input(page, '지적')).toHaveCount(0)
     await expect(button(page, '검토')).toHaveCount(0)
+    expect(evaluations(backend)).toHaveLength(0)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await reveal(page, '의견 남기기')
+    await expect(input(page, '지적')).toHaveValue('인증 오류 정리 표식')
     expect(evaluations(backend)).toHaveLength(0)
   })
 }

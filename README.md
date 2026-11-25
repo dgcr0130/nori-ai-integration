@@ -1,13 +1,13 @@
-# Nori AI 공통 연동 1.0.3
+# Nori AI 공통 연동 1.0.4
 
 연결 작업은 아래 네 가지입니다. Spring MVC·Spring Security를 사용하는 **Spring Boot 4.0·Java 21** 앱이 대상입니다. MES·HRM은 Boot 4.0으로 올린 뒤 연결해야 합니다. 두 중립 예제는 헤더·쿠키 전달 계약을 확인하며 MES·HRM의 실제 인증·적용을 증명하지 않습니다.
 
 ## 1. backend: 의존·설정·사용자 해석·업무 처리기
 
-발행 좌표는 `com.nori.ai:ai-integration-spring-boot-starter:1.0.3`입니다.
+발행 좌표는 `com.nori.ai:ai-integration-spring-boot-starter:1.0.4`입니다.
 
 ```kotlin
-implementation("com.nori.ai:ai-integration-spring-boot-starter:1.0.3")
+implementation("com.nori.ai:ai-integration-spring-boot-starter:1.0.4")
 ```
 
 GitLab Maven 프로젝트 번호는 **51**입니다. 기존 Nori 공통 settings 규칙을 쓰는 시스템은 `gradle.properties`의 `gitlabPackageProjectIds` 목록에 51을 추가합니다. settings나 leaf 모듈에 저장소를 추가하지 않습니다. 저장소는 `GITLAB_BASE_URL`(TC CI: `https://gitlab.noricloud.org`) 아래 `/api/v4/projects/51/packages/maven`입니다. CI는 `CI_JOB_TOKEN`을 `Job-Token` 헤더로 사용합니다. 로컬은 CI_JOB_TOKEN이 없을 때 `gitlabToken` 또는 `GITLAB_TOKEN`을 `Private-Token` 헤더로 전달하고 값을 파일에 저장하지 않습니다. 로컬 TC 소비 검증은 `-PuseLocalMaven`입니다. 프로젝트 51의 패키지 발행과 소비 CI job token 수신 허용 설정은 설치 담당자의 별도 작업입니다.
@@ -110,7 +110,11 @@ script는 requestHeaders를 사용할 수 없으므로 **자산 경로만 로그
 
 배치는 position=`bottom-right`(기본)·`bottom-left`와 CSS 변수 `--nori-ai-width`(440px), `--nori-ai-height`(600px), `--nori-ai-accent`(#2563eb)만 조정합니다. 크기는 양의 CSS 길이이며 화면 안으로 제한합니다. 기본 모서리 여백은 24px, 좁은 화면은 16px이며 safe-area를 반영합니다. 오류는 기본값입니다. 왼쪽 목록은 넓은 화면에서 224px 확장하고 좁은 화면에서는 키보드로 닫을 수 있는 서랍으로 엽니다. 내부 부품 교체·렌더러 주입·새 메뉴·라우트는 없습니다.
 
-X는 현재 대화·초안·진행 중 질문을 유지한 채 최소화합니다. 재열기와 창 focus에서는 세션 확인이 끝날 때까지 보호 내용을 숨기며 사용자 변경·인증 실패·권한 회수 시 접근할 수 없는 내용을 비웁니다. 태그를 DOM에서 제거하면 요청·스트림·이벤트와 React 화면을 해제합니다. 대화/검토 전환은 `/session`의 `canReview`가 허용한 사용자에게만 보이며 실제 검토 권한은 서버가 계속 검사합니다. 호스트의 `.dark` 클래스 또는 OS 다크 테마를 따릅니다.
+X는 현재 대화·초안·진행 중 질문을 유지한 채 최소화합니다. 최초 열기·재열기는 인증과 필요한 상세 확인이 끝날 때까지 보호 내용을 숨깁니다. 일반 창 focus는 대화 DOM·초안·스크롤·누적 목록·정상 SSE를 유지하며 인증과 현재 비활성 대화·열린 검토 상세를 재확인합니다. 확인 중 로컬 입력은 가능하지만 사용자발 서버 작업은 제한합니다. 아직 서버에서 관측하지 못한 계정·권한 변경까지 즉시 감지하는 보장은 아닙니다. 목록은 재열기·목록 재진입·‘목록·상세 새로고침’에서 새 커서 세대로 갱신합니다.
+
+확정 로그아웃·사용자 변경은 이전 메모리와 연결을 비웁니다. 인증 확인 불가·통신 오류는 보호 화면을 차단하고 초안·Job·접수 결과 불명의 멱등 키를 메모리에 격리합니다. 같은 신원 확인 후 복원하며 다른 신원이면 폐기합니다. 질문 자동 재전송이나 SSE 자동 재연결은 하지 않습니다. 태그를 DOM에서 제거하면 요청·스트림·이벤트와 React 화면을 해제합니다. 대화/검토 전환은 `/session`의 `canReview`가 허용한 사용자에게만 보이며 실제 검토 권한은 서버가 계속 검사합니다. 호스트의 `.dark` 클래스 또는 OS 다크 테마를 따릅니다.
+
+호스트는 선택적으로 `window.noriAiAuthState`에 `signed-out`(로그아웃/로그인 전환 시작), `invalidate`(캐시 회수), `check`(서버 재확인)를 먼저 기록한 뒤 `window.dispatchEvent(new Event('nori-ai-auth-change'))`로 동기 통지할 수 있습니다. 위젯은 최소화 중에도 처리하고 늦게 연결되면 기록된 상태부터 읽습니다. `signed-out`은 후속 `check`까지 서버 확인으로 되살리지 않습니다. 통지는 신원·권한·CSRF를 전달하거나 확정하지 않습니다. TC는 실제 로그인·로그아웃·401에 연결하며 다른 탭의 검증된 BroadcastChannel 통지는 보조 무효화 힌트로만 사용합니다. 다른 호스트나 HEADER 예제에 TC 연동을 요구하지 않습니다.
 
 ```powershell
 # front 디렉터리. 브라우저 설치가 필요한 환경에서는 npx playwright install chromium을 먼저 수행
@@ -121,7 +125,7 @@ npm run test:e2e -- tests/e2e/widget-consumers.spec.ts
 
 브라우저 시험은 두 bootJar를 직접 띄우고 임시 포트·가짜 자격·로컬 Gateway 대역·header 앞단을 소유합니다. COOKIE 호스트는 React 19.2.8·초록 전역 CSS, HEADER 호스트는 React/React DOM 18.3.1·빨강 전역 CSS이며 ref 연결과 위젯 Shadow DOM 격리를 확인합니다. 끝나면 브라우저·앱·대역·임시 자격을 정리합니다. 수동 실행 시 `EXAMPLE_GATEWAY_URL`(로컬 대역), 네 `EXAMPLE_*_FILE`과 `EXAMPLE_LOGIN_PASSWORD` 또는 `EXAMPLE_LOGIN_TOKEN`을 외부 환경으로 공급합니다. cookie 앱은 기본 18081, header backend는 18082입니다. header 앞단은 `EXAMPLE_BACKEND_URL=http://127.0.0.1:18082`, `EXAMPLE_FRONT_PORT=18083`, 같은 `EXAMPLE_LOGIN_TOKEN`을 공급하고 `node examples/header-app/proxy.mjs`로 실행합니다. 자격 값을 소스·명령 인자에 넣지 않습니다.
 
-네 파일 환경변수는 `EXAMPLE_SERVICE_TOKEN_FILE`, `EXAMPLE_ACTOR_JWK_FILE`, `EXAMPLE_GATEWAY_TOKEN_FILE`, `EXAMPLE_DELEGATION_KEY_FILE`입니다. 환경 입력을 준비한 뒤 저장소 루트에서 `java -jar examples/cookie-app/build/libs/cookie-app-1.0.3.jar` 또는 `java -jar examples/header-app/build/libs/header-app-1.0.3.jar`를 실행합니다. cookie 화면의 "쿠키 로그인"은 사용자 `reader_1`과 외부 공급 비밀번호를 사용하며, header 화면의 "예제 로그인 토큰"에는 외부 공급 테스트 토큰을 입력합니다. 수동 실행한 앱·앞단·대역도 확인 후 종료합니다.
+네 파일 환경변수는 `EXAMPLE_SERVICE_TOKEN_FILE`, `EXAMPLE_ACTOR_JWK_FILE`, `EXAMPLE_GATEWAY_TOKEN_FILE`, `EXAMPLE_DELEGATION_KEY_FILE`입니다. 환경 입력을 준비한 뒤 저장소 루트에서 `java -jar examples/cookie-app/build/libs/cookie-app-1.0.4.jar` 또는 `java -jar examples/header-app/build/libs/header-app-1.0.4.jar`를 실행합니다. cookie 화면의 "쿠키 로그인"은 사용자 `reader_1`과 외부 공급 비밀번호를 사용하며, header 화면의 "예제 로그인 토큰"에는 외부 공급 테스트 토큰을 입력합니다. 수동 실행한 앱·앞단·대역도 확인 후 종료합니다.
 
 ## 3. Gateway: 시스템 항목과 자격 배치
 
