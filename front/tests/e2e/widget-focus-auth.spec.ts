@@ -85,7 +85,7 @@ for (const failure of ['503', 'transport', 'invalid', 'empty-subject', 'invalid-
         if (failure === 'transport') return route.abort('failed')
         if (failure === '503') return route.fulfill({ status: 503, json: { code: 'AUTH_UNAVAILABLE', message: '인증 확인 불가' } })
         return route.fulfill({ json: failure === 'invalid' ? { subject: 'alice', canReview: 'wrong' }
-          : { subject: failure === 'empty-subject' ? '' : 'alice', canReview: true, integrationVersion: '1.0.4',
+          : { subject: failure === 'empty-subject' ? '' : 'alice', canReview: true, integrationVersion: '1.0.5',
             csrf: failure === 'invalid-csrf' ? { headerName: '', token: 'invalid' } : null } })
       })
       await page.evaluate(() => window.dispatchEvent(new Event('focus')))
@@ -178,7 +178,7 @@ test('동기 인증 무효화는 최소화·늦은 세션 성공을 무시하고
   await page.route('**/session', async route => {
     if (started) return route.continue()
     started = true; await held
-    await route.fulfill({ json: { subject: 'alice', canReview: true, integrationVersion: '1.0.4', csrf: { headerName: 'X-Nori-AI-CSRF', token: 'stale' } } })
+    await route.fulfill({ json: { subject: 'alice', canReview: true, integrationVersion: '1.0.5', csrf: { headerName: 'X-Nori-AI-CSRF', token: 'stale' } } })
     finished = true
   })
   try {
